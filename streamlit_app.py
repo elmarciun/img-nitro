@@ -45,6 +45,21 @@ DIM_ALIAS = {
     "21:9": ["21:9"], "4:5": ["4:5"], "5:4": ["5:4"],
     "2:3": ["2:3"], "3:2": ["3:2"], "auto": ["auto"],
 }
+
+DIM_LABEL = {
+    "1:1": "Quadrato (1:1)",
+    "16:9": "Orizzontale (16:9)",
+    "9:16": "Verticale (9:16)",
+    "4:3": "Classico (4:3)",
+    "3:4": "Ritratto (3:4)",
+    "21:9": "Ultra-wide (21:9)",
+    "4:5": "Social (4:5)",
+    "5:4": "Foto (5:4)",
+    "2:3": "Poster (2:3)",
+    "3:2": "Fotocamera (3:2)",
+    "auto": "Automatico",
+}
+
 _OTP_RE = re.compile(r"\b(\d{6})\b")
 _PWC = string.ascii_letters + string.digits + "!@#$%"
 
@@ -136,6 +151,19 @@ async def signup_one():
         return {"email": email, "password": password, "local_id": local_id,
                 "id_token": id_token, "refresh_token": refresh_token, "credits": 25,
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+
+# ═══════════ IMAGE UPLOAD ═══════════
+async def upload_image_get_url(image_bytes: bytes, filename: str, token: str) -> Optional[str]:
+    """Upload immagine e ritorna URL pubblico. Prova diversi endpoint noti."""
+    # Prova endpoint di upload standard
+    async with _client(timeout=60) as c:
+        # Fallback: usa data URI se non abbiamo un endpoint
+        # Determina il MIME
+        ext = filename.lower().split(".")[-1] if "." in filename else "png"
+        mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+                "webp": "image/webp", "gif": "image/gif"}.get(ext, "image/png")
+        b64 = base64.b64encode(image_bytes).decode("ascii")
+        return f"data:{mime};base64,{b64}"
 
 # ═══════════ MODELS ═══════════
 _MODELS: Optional[list] = None
@@ -364,7 +392,7 @@ async def do_generate(prompt, model_key, dimension="1:1", count=1,
                       reference_urls=None, art_style_id=0, progress_state=None):
     models = await fetch_models()
     m = find_model(models, model_key)
-    if not m: raise RuntimeError(f"Model '{model_key}' not found")
+    if not m: raise RuntimeError(f"Modello '{model_key}' non trovato")
     need = _mc(m); dim = resolve_dim(m, dimension)
 
     if progress_state:
@@ -373,7 +401,7 @@ async def do_generate(prompt, model_key, dimension="1:1", count=1,
 
     acc = await auto_pick_account(need, progress_state=progress_state)
     tok = await _ensure_tok(acc); uid = _uid(tok)
-    if not uid: raise RuntimeError("Invalid session token")
+    if not uid: raise RuntimeError("Sessione non valida")
 
     if progress_state: progress_state["phase"] = "submit"
     t0 = time.perf_counter()
@@ -382,7 +410,7 @@ async def do_generate(prompt, model_key, dimension="1:1", count=1,
         payload = _build_payload(m, prompt, dim, count, art_style_id, ref_urls=reference_urls)
         resp = await _post(c, f"{API}/process/txt-image", payload, ah)
         pid = _pid(resp)
-        if not pid: raise RuntimeError(f"Job not created: {resp}")
+        if not pid: raise RuntimeError(f"Impossibile creare job: {resp}")
         if progress_state:
             progress_state["phase"] = "render"
             progress_state["pid"] = pid[:12]
@@ -411,35 +439,41 @@ def run(coro):
 
 
 # ═══════════════════════════════════════════════════════════════════
-#                    UI - ChatGPT-style Minimal
+#                    UI
 # ═══════════════════════════════════════════════════════════════════
 st.set_page_config(page_title="Nitro", layout="wide", initial_sidebar_state="collapsed")
 
-# THEME STATE
 if "theme" not in st.session_state:
     st.session_state.theme = "dark"
 
 THEME = st.session_state.theme
 
-# Color palette (ChatGPT-inspired)
+# ═══ DARK: viola/indigo vibrante  ·  LIGHT: bianco ChatGPT ═══
 if THEME == "dark":
     C = {
-        "bg":        "#212121",
-        "bg_2":      "#2f2f2f",
-        "bg_3":      "#171717",
-        "surface":   "#2f2f2f",
-        "surface_h": "#3a3a3a",
-        "border":    "#404040",
-        "border_h":  "#565656",
-        "text":      "#ececec",
-        "text_2":    "#b4b4b4",
-        "text_3":    "#8e8e8e",
-        "accent":    "#10a37f",
-        "accent_h":  "#0d8968",
-        "danger":    "#ef4444",
-        "success":   "#10a37f",
-        "input_bg":  "#2f2f2f",
-        "shadow":    "0 2px 12px rgba(0, 0, 0, 0.3)",
+        "bg":        "#0a0618",
+        "bg_2":      "#141028",
+        "bg_3":      "#1c1638",
+        "surface":   "#1a1435",
+        "surface_h": "#241d47",
+        "border":    "rgba(139, 92, 246, 0.18)",
+        "border_h":  "rgba(139, 92, 246, 0.45)",
+        "text":      "#f5f3ff",
+        "text_2":    "#c4b5fd",
+        "text_3":    "#8b7cc8",
+        "accent":    "#a855f7",
+        "accent_2":  "#8b5cf6",
+        "accent_3":  "#ec4899",
+        "accent_h":  "#c084fc",
+        "danger":    "#f87171",
+        "success":   "#4ade80",
+        "input_bg":  "#100b24",
+        "shadow":    "0 10px 40px rgba(139, 92, 246, 0.15)",
+        "glow":      "0 0 60px rgba(168, 85, 247, 0.25)",
+        "hero_bg":   "linear-gradient(135deg, #1a0f3d 0%, #2d1b5e 50%, #4c1d95 100%)",
+        "btn_bg":    "linear-gradient(135deg, #8b5cf6 0%, #a855f7 50%, #ec4899 100%)",
+        "btn_h":     "linear-gradient(135deg, #a855f7 0%, #c084fc 50%, #f472b6 100%)",
+        "prog_bg":   "linear-gradient(90deg, #8b5cf6, #a855f7, #ec4899, #a855f7, #8b5cf6)",
     }
 else:
     C = {
@@ -454,11 +488,18 @@ else:
         "text_2":    "#5d5d5d",
         "text_3":    "#8e8e8e",
         "accent":    "#10a37f",
+        "accent_2":  "#10a37f",
+        "accent_3":  "#10a37f",
         "accent_h":  "#0d8968",
         "danger":    "#ef4444",
         "success":   "#10a37f",
         "input_bg":  "#ffffff",
         "shadow":    "0 2px 12px rgba(0, 0, 0, 0.06)",
+        "glow":      "none",
+        "hero_bg":   "linear-gradient(135deg, #f7f7f8 0%, #ececec 100%)",
+        "btn_bg":    "#10a37f",
+        "btn_h":     "#0d8968",
+        "prog_bg":   "linear-gradient(90deg, #10a37f 0%, #14c19a 50%, #10a37f 100%)",
     }
 
 st.markdown(f"""
@@ -466,33 +507,28 @@ st.markdown(f"""
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
     
     :root {{
-        --bg: {C['bg']};
-        --bg-2: {C['bg_2']};
-        --bg-3: {C['bg_3']};
-        --surface: {C['surface']};
-        --surface-h: {C['surface_h']};
-        --border: {C['border']};
-        --border-h: {C['border_h']};
-        --text: {C['text']};
-        --text-2: {C['text_2']};
-        --text-3: {C['text_3']};
-        --accent: {C['accent']};
-        --accent-h: {C['accent_h']};
-        --danger: {C['danger']};
-        --success: {C['success']};
+        --bg: {C['bg']}; --bg-2: {C['bg_2']}; --bg-3: {C['bg_3']};
+        --surface: {C['surface']}; --surface-h: {C['surface_h']};
+        --border: {C['border']}; --border-h: {C['border_h']};
+        --text: {C['text']}; --text-2: {C['text_2']}; --text-3: {C['text_3']};
+        --accent: {C['accent']}; --accent-2: {C['accent_2']};
+        --accent-3: {C['accent_3']}; --accent-h: {C['accent_h']};
+        --danger: {C['danger']}; --success: {C['success']};
         --input-bg: {C['input_bg']};
-        --shadow: {C['shadow']};
+        --shadow: {C['shadow']}; --glow: {C['glow']};
     }}
     
     * {{ box-sizing: border-box; }}
     
     html, body, [class*="css"], .stApp {{
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
-        background: var(--bg) !important;
+        font-family: 'Inter', -apple-system, sans-serif !important;
         color: var(--text) !important;
     }}
     
-    .stApp {{ background: var(--bg) !important; }}
+    .stApp {{
+        background: var(--bg) !important;
+        {"background-image: radial-gradient(ellipse 80% 50% at 20% 10%, rgba(139, 92, 246, 0.15), transparent), radial-gradient(ellipse 60% 40% at 80% 30%, rgba(168, 85, 247, 0.12), transparent), radial-gradient(ellipse 70% 45% at 50% 90%, rgba(236, 72, 153, 0.08), transparent) !important; background-attachment: fixed !important;" if THEME == "dark" else ""}
+    }}
     
     #MainMenu, footer, header {{ visibility: hidden; }}
     .block-container {{
@@ -500,67 +536,66 @@ st.markdown(f"""
         max-width: 1200px !important;
     }}
     
-    /* ═══ HEADER ═══ */
-    .nitro-nav {{
+    /* ═══ NAVBAR ═══ */
+    .nav {{
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 12px 20px;
-        background: var(--bg);
-        border-bottom: 1px solid var(--border);
-        margin: -1.5rem -2rem 1.5rem -2rem;
+        padding: 14px 22px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        margin-bottom: 20px;
+        {"box-shadow: var(--glow);" if THEME == "dark" else "box-shadow: var(--shadow);"}
     }}
-    .nitro-logo {{
+    .logo {{
         display: flex;
         align-items: center;
-        gap: 10px;
-        font-size: 17px;
-        font-weight: 600;
+        gap: 12px;
+        font-size: 18px;
+        font-weight: 700;
         color: var(--text);
         letter-spacing: -0.3px;
     }}
-    .nitro-logo-dot {{
-        width: 24px; height: 24px;
-        background: linear-gradient(135deg, var(--accent), #0d8968);
-        border-radius: 8px;
+    .logo-dot {{
+        width: 32px; height: 32px;
+        background: {C['btn_bg']};
+        border-radius: 10px;
         display: flex;
         align-items: center;
         justify-content: center;
         color: white;
         font-weight: 700;
-        font-size: 13px;
+        font-size: 15px;
         font-family: 'JetBrains Mono', monospace;
+        {"box-shadow: 0 4px 16px rgba(168, 85, 247, 0.4);" if THEME == "dark" else ""}
     }}
-    .nitro-badge {{
+    .badge {{
         background: var(--bg-2);
-        color: var(--text-3);
-        padding: 2px 8px;
-        border-radius: 6px;
+        color: var(--text-2);
+        padding: 3px 9px;
+        border-radius: 8px;
         font-size: 10px;
         font-weight: 600;
         letter-spacing: 0.5px;
         margin-left: 4px;
         border: 1px solid var(--border);
     }}
-    .nitro-nav-right {{
-        display: flex;
-        align-items: center;
-        gap: 8px;
-    }}
     
-    /* Theme toggle button (Streamlit button styled) */
+    /* Theme button (Streamlit) */
+    div[data-testid="stButton"][data-baseweb="button"]:has(button[kind="secondary"]) button,
     div[data-testid="stButton"]:has(button[kind="secondary"]) button {{
         background: var(--surface) !important;
-        color: var(--text-2) !important;
+        color: var(--text) !important;
         border: 1px solid var(--border) !important;
-        padding: 8px 12px !important;
-        font-size: 12px !important;
+        padding: 8px 16px !important;
+        font-size: 13px !important;
         font-weight: 500 !important;
-        letter-spacing: 0 !important;
         text-transform: none !important;
+        letter-spacing: 0 !important;
         border-radius: 100px !important;
         box-shadow: none !important;
-        min-height: 36px !important;
+        min-height: 38px !important;
     }}
     div[data-testid="stButton"]:has(button[kind="secondary"]) button:hover {{
         background: var(--surface-h) !important;
@@ -572,7 +607,7 @@ st.markdown(f"""
     .stTabs [data-baseweb="tab-list"] {{
         gap: 4px;
         background: var(--bg-2);
-        padding: 4px;
+        padding: 5px;
         border-radius: 100px;
         border: 1px solid var(--border);
         width: fit-content;
@@ -582,56 +617,54 @@ st.markdown(f"""
         background: transparent;
         color: var(--text-2);
         border-radius: 100px;
-        padding: 8px 20px;
+        padding: 9px 24px;
         font-weight: 500;
         font-size: 13px;
         letter-spacing: 0;
         text-transform: none;
         font-family: 'Inter', sans-serif !important;
-        transition: all 0.15s ease;
-        border: none;
+        transition: all 0.2s ease;
+        border: none !important;
     }}
-    .stTabs [data-baseweb="tab"]:hover {{
-        color: var(--text);
-        background: var(--surface-h);
-    }}
+    .stTabs [data-baseweb="tab"]:hover {{ color: var(--text); }}
     .stTabs [aria-selected="true"] {{
-        background: var(--surface) !important;
-        color: var(--text) !important;
-        box-shadow: var(--shadow);
+        background: {C['btn_bg'] if THEME == "dark" else "var(--surface)"} !important;
+        color: {"white" if THEME == "dark" else "var(--text)"} !important;
+        box-shadow: {"0 4px 20px rgba(168, 85, 247, 0.4)" if THEME == "dark" else "var(--shadow)"};
     }}
-    .stTabs [data-baseweb="tab-panel"] {{ padding-top: 8px; }}
     .stTabs [data-baseweb="tab-highlight"] {{ display: none !important; }}
     .stTabs [data-baseweb="tab-border"] {{ display: none !important; }}
     
-    /* ═══ SECTION LABEL ═══ */
+    /* ═══ LABEL ═══ */
     .sec-label {{
-        color: var(--text-2);
-        font-size: 13px;
-        font-weight: 500;
-        margin: 16px 0 8px 0;
-        letter-spacing: 0;
+        color: var(--text) !important;
+        font-size: 14px;
+        font-weight: 600;
+        margin: 20px 0 10px 0;
     }}
     
-    /* ═══ INPUTS (ChatGPT-style rounded) ═══ */
+    /* ═══ INPUTS ═══ */
     .stTextArea textarea {{
         background: var(--input-bg) !important;
         border: 1px solid var(--border) !important;
         color: var(--text) !important;
         font-family: 'Inter', sans-serif !important;
         font-size: 15px !important;
-        border-radius: 24px !important;
+        border-radius: 20px !important;
         padding: 16px 20px !important;
-        transition: all 0.15s !important;
+        transition: all 0.2s !important;
         resize: none !important;
         box-shadow: var(--shadow);
     }}
     .stTextArea textarea:focus {{
-        border-color: var(--text-3) !important;
-        box-shadow: 0 0 0 2px rgba(16, 163, 127, 0.1), var(--shadow) !important;
+        border-color: var(--accent) !important;
+        box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.15) !important;
         outline: none !important;
     }}
-    .stTextArea textarea::placeholder {{ color: var(--text-3) !important; }}
+    .stTextArea textarea::placeholder {{ 
+        color: var(--text-3) !important;
+        opacity: 1 !important;
+    }}
     
     .stTextInput input {{
         background: var(--input-bg) !important;
@@ -640,14 +673,15 @@ st.markdown(f"""
         font-family: 'Inter', sans-serif !important;
         font-size: 14px !important;
         border-radius: 100px !important;
-        padding: 10px 18px !important;
+        padding: 10px 20px !important;
         height: 44px !important;
     }}
     .stTextInput input:focus {{
         border-color: var(--accent) !important;
-        box-shadow: 0 0 0 3px rgba(16, 163, 127, 0.12) !important;
+        box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.15) !important;
         outline: none !important;
     }}
+    .stTextInput input::placeholder {{ color: var(--text-3) !important; }}
     
     /* Selectbox */
     .stSelectbox > div > div {{
@@ -663,13 +697,17 @@ st.markdown(f"""
         color: var(--text) !important;
         font-family: 'Inter', sans-serif !important;
     }}
+    .stSelectbox [data-baseweb="select"] span,
+    .stSelectbox [data-baseweb="select"] input {{
+        color: var(--text) !important;
+    }}
     
-    /* Selectbox dropdown menu */
+    /* Dropdown menu */
     [data-baseweb="popover"] > div {{
         background: var(--surface) !important;
         border: 1px solid var(--border) !important;
         border-radius: 14px !important;
-        box-shadow: var(--shadow) !important;
+        box-shadow: var(--shadow), var(--glow) !important;
         overflow: hidden !important;
     }}
     [data-baseweb="menu"] {{
@@ -678,10 +716,18 @@ st.markdown(f"""
     [data-baseweb="menu"] li {{
         color: var(--text) !important;
         font-family: 'Inter', sans-serif !important;
-        font-size: 13px !important;
-        padding: 10px 14px !important;
+        font-size: 14px !important;
+        padding: 12px 16px !important;
+        background: var(--surface) !important;
     }}
-    [data-baseweb="menu"] li:hover {{ background: var(--surface-h) !important; }}
+    [data-baseweb="menu"] li:hover {{ 
+        background: var(--surface-h) !important;
+        color: var(--text) !important;
+    }}
+    [data-baseweb="menu"] li[aria-selected="true"] {{
+        background: {"rgba(168, 85, 247, 0.15)" if THEME == "dark" else "var(--surface-h)"} !important;
+        color: var(--text) !important;
+    }}
     
     /* Number input */
     .stNumberInput > div > div {{
@@ -705,42 +751,87 @@ st.markdown(f"""
         color: var(--text) !important;
     }}
     
-    /* Label text */
-    .stTextArea label, .stTextInput label, .stSelectbox label, .stNumberInput label {{
-        color: var(--text-2) !important;
-        font-size: 13px !important;
-        font-weight: 500 !important;
+    /* Labels */
+    .stTextArea label, .stTextInput label, .stSelectbox label, .stNumberInput label,
+    .stFileUploader label {{
+        color: var(--text) !important;
+        font-size: 14px !important;
+        font-weight: 600 !important;
         font-family: 'Inter', sans-serif !important;
     }}
     
-    /* Checkbox */
-    .stCheckbox label {{ color: var(--text-2) !important; font-size: 13px !important; }}
-    .stCheckbox [data-baseweb="checkbox"] {{ border-radius: 6px !important; }}
+    /* ═══ FILE UPLOADER (Drag & Drop) ═══ */
+    [data-testid="stFileUploader"] {{
+        background: transparent !important;
+    }}
+    [data-testid="stFileUploader"] section {{
+        background: var(--input-bg) !important;
+        border: 2px dashed var(--border) !important;
+        border-radius: 20px !important;
+        padding: 24px !important;
+        transition: all 0.2s !important;
+    }}
+    [data-testid="stFileUploader"] section:hover {{
+        border-color: var(--accent) !important;
+        background: var(--surface-h) !important;
+    }}
+    [data-testid="stFileUploader"] section > div {{
+        color: var(--text-2) !important;
+    }}
+    [data-testid="stFileUploader"] section small {{
+        color: var(--text-3) !important;
+    }}
+    [data-testid="stFileUploader"] button {{
+        background: var(--surface) !important;
+        color: var(--text) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 100px !important;
+        font-weight: 500 !important;
+        font-size: 13px !important;
+        padding: 8px 20px !important;
+    }}
+    [data-testid="stFileUploader"] button:hover {{
+        background: var(--surface-h) !important;
+        border-color: var(--accent) !important;
+    }}
+    [data-testid="stFileUploaderFile"] {{
+        background: var(--surface) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 12px !important;
+        padding: 8px 12px !important;
+    }}
+    [data-testid="stFileUploaderFile"] small,
+    [data-testid="stFileUploaderFile"] div {{
+        color: var(--text) !important;
+    }}
     
     /* ═══ PRIMARY BUTTON ═══ */
-    div[data-testid="stButton"] > button {{
-        background: var(--accent);
-        color: white;
-        border: none;
-        font-weight: 500;
-        font-size: 14px;
-        letter-spacing: 0;
-        padding: 12px 24px;
-        border-radius: 100px;
-        text-transform: none;
-        font-family: 'Inter', sans-serif;
-        transition: all 0.15s;
-        box-shadow: none;
-        min-height: 44px;
+    div[data-testid="stButton"] > button:not([kind="secondary"]) {{
+        background: {C['btn_bg']} !important;
+        color: white !important;
+        border: none !important;
+        font-weight: 600 !important;
+        font-size: 15px !important;
+        letter-spacing: 0 !important;
+        padding: 14px 28px !important;
+        border-radius: 100px !important;
+        text-transform: none !important;
+        font-family: 'Inter', sans-serif !important;
+        transition: all 0.2s !important;
+        min-height: 50px !important;
+        {"box-shadow: 0 4px 20px rgba(168, 85, 247, 0.35);" if THEME == "dark" else "box-shadow: none;"}
     }}
-    div[data-testid="stButton"] > button:hover {{
-        background: var(--accent-h);
-        transform: none;
-        box-shadow: 0 2px 8px rgba(16, 163, 127, 0.25);
+    div[data-testid="stButton"] > button:not([kind="secondary"]):hover {{
+        background: {C['btn_h']} !important;
+        transform: translateY(-1px) !important;
+        {"box-shadow: 0 8px 30px rgba(168, 85, 247, 0.5);" if THEME == "dark" else "box-shadow: 0 2px 8px rgba(16, 163, 127, 0.25);"}
     }}
     div[data-testid="stButton"] > button:disabled {{
-        background: var(--bg-3);
-        color: var(--text-3);
+        background: var(--bg-3) !important;
+        color: var(--text-3) !important;
+        opacity: 0.6 !important;
+        box-shadow: none !important;
+        transform: none !important;
     }}
     
     /* Download button */
@@ -751,17 +842,18 @@ st.markdown(f"""
         border-radius: 100px !important;
         font-weight: 500 !important;
         font-size: 13px !important;
-        padding: 8px 16px !important;
+        padding: 10px 20px !important;
     }}
     .stDownloadButton > button:hover {{
         background: var(--surface-h) !important;
-        border-color: var(--border-h) !important;
+        border-color: var(--accent) !important;
+        color: var(--accent) !important;
     }}
     
     /* ═══ PROGRESS BAR ═══ */
     .np-wrap {{
         margin: 16px 0;
-        padding: 20px 24px;
+        padding: 22px 26px;
         background: var(--surface);
         border: 1px solid var(--border);
         border-radius: 20px;
@@ -779,26 +871,29 @@ st.markdown(f"""
         gap: 10px;
         color: var(--text);
         font-size: 14px;
-        font-weight: 500;
+        font-weight: 600;
     }}
     .np-spin {{
-        width: 14px; height: 14px;
+        width: 16px; height: 16px;
         border: 2px solid var(--border);
         border-top-color: var(--accent);
+        border-right-color: var(--accent-3);
         border-radius: 50%;
         animation: spin 0.8s linear infinite;
     }}
     @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
     .np-pct {{
-        font-size: 15px;
-        font-weight: 600;
-        color: var(--text);
+        font-size: 20px;
+        font-weight: 700;
+        {"background: linear-gradient(135deg, var(--accent), var(--accent-3)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;" if THEME == "dark" else "color: var(--accent);"}
         font-family: 'JetBrains Mono', monospace;
-        letter-spacing: -0.3px;
+        letter-spacing: -0.5px;
+        min-width: 90px;
+        text-align: right;
     }}
     .np-track {{
         position: relative;
-        height: 6px;
+        height: 8px;
         background: var(--bg-3);
         border-radius: 100px;
         overflow: hidden;
@@ -806,20 +901,32 @@ st.markdown(f"""
     .np-fill {{
         position: absolute;
         top: 0; left: 0; bottom: 0;
-        background: linear-gradient(90deg, var(--accent) 0%, #14c19a 50%, var(--accent) 100%);
-        background-size: 200% 100%;
+        background: {C['prog_bg']};
+        background-size: 300% 100%;
         border-radius: 100px;
         transition: width 0.1s cubic-bezier(0.4, 0, 0.2, 1);
-        animation: shim 2s linear infinite;
+        animation: flow 3s linear infinite;
+        {"box-shadow: 0 0 20px rgba(168, 85, 247, 0.5);" if THEME == "dark" else ""}
+    }}
+    @keyframes flow {{
+        0% {{ background-position: 0% 50%; }}
+        100% {{ background-position: 300% 50%; }}
+    }}
+    .np-fill::after {{
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.35) 50%, transparent 100%);
+        animation: shim 1.6s linear infinite;
     }}
     @keyframes shim {{
-        0% {{ background-position: 200% 0; }}
-        100% {{ background-position: -200% 0; }}
+        0% {{ transform: translateX(-100%); }}
+        100% {{ transform: translateX(100%); }}
     }}
     .np-meta {{
         display: flex;
         justify-content: space-between;
-        margin-top: 12px;
+        margin-top: 14px;
         font-family: 'JetBrains Mono', monospace;
         font-size: 11px;
         color: var(--text-3);
@@ -831,13 +938,15 @@ st.markdown(f"""
         letter-spacing: 0.5px;
     }}
     
-    /* Success state */
     .np-wrap.done {{
-        border-color: var(--accent);
-        background: {'rgba(16, 163, 127, 0.06)' if THEME == 'dark' else 'rgba(16, 163, 127, 0.04)'};
+        border-color: var(--success);
+        {"background: rgba(74, 222, 128, 0.06);" if THEME == "dark" else "background: rgba(16, 163, 127, 0.04);"}
     }}
-    .np-wrap.done .np-label {{ color: var(--accent); }}
-    .np-wrap.done .np-pct {{ color: var(--accent); }}
+    .np-wrap.done .np-label {{ color: var(--success); }}
+    .np-wrap.done .np-pct {{ 
+        color: var(--success);
+        -webkit-text-fill-color: var(--success);
+    }}
     
     /* ═══ PLACEHOLDER ═══ */
     .np-placeholder {{
@@ -845,14 +954,19 @@ st.markdown(f"""
         aspect-ratio: 1;
         max-height: 500px;
         background: var(--bg-2);
-        border: 1px dashed var(--border);
+        border: 2px dashed var(--border);
         border-radius: 20px;
         display: flex;
+        flex-direction: column;
         align-items: center;
         justify-content: center;
+        gap: 12px;
         color: var(--text-3);
-        font-size: 13px;
+        font-size: 14px;
         font-weight: 500;
+    }}
+    .np-placeholder svg {{
+        opacity: 0.4;
     }}
     
     /* ═══ MODEL CARD ═══ */
@@ -861,21 +975,22 @@ st.markdown(f"""
         grid-template-columns: 1fr auto;
         gap: 16px;
         align-items: center;
-        padding: 16px 20px;
+        padding: 18px 22px;
         background: var(--surface);
         border: 1px solid var(--border);
         border-radius: 16px;
-        margin-bottom: 8px;
-        transition: all 0.15s;
+        margin-bottom: 10px;
+        transition: all 0.2s;
     }}
     .mcard:hover {{
         border-color: var(--border-h);
         background: var(--surface-h);
+        transform: translateX(4px);
     }}
     .mkey {{
         color: var(--text);
-        font-weight: 600;
-        font-size: 14px;
+        font-weight: 700;
+        font-size: 15px;
         font-family: 'JetBrains Mono', monospace;
     }}
     .mname {{
@@ -889,48 +1004,47 @@ st.markdown(f"""
         margin-top: 4px;
         font-family: 'JetBrains Mono', monospace;
     }}
-    .cost {{
+    .tag {{
+        display: inline-block;
+        background: {"rgba(168, 85, 247, 0.15)" if THEME == "dark" else "var(--bg-2)"};
+        color: var(--accent);
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-size: 9px;
+        font-weight: 700;
+        margin-left: 6px;
+        letter-spacing: 0.5px;
+        border: 1px solid var(--border);
+    }}
+    .mtime {{
+        background: {"rgba(168, 85, 247, 0.1)" if THEME == "dark" else "var(--bg-2)"};
+        color: var(--text-2);
         padding: 6px 14px;
         border-radius: 100px;
         font-weight: 600;
-        font-size: 13px;
+        font-size: 12px;
         font-family: 'JetBrains Mono', monospace;
-    }}
-    .cost.a {{ background: {'rgba(16, 163, 127, 0.15)' if THEME == 'dark' else 'rgba(16, 163, 127, 0.1)'}; color: var(--accent); }}
-    .cost.b {{ background: {'rgba(234, 179, 8, 0.15)' if THEME == 'dark' else 'rgba(234, 179, 8, 0.1)'}; color: #eab308; }}
-    .cost.c {{ background: {'rgba(239, 68, 68, 0.15)' if THEME == 'dark' else 'rgba(239, 68, 68, 0.1)'}; color: var(--danger); }}
-    .tag {{
-        display: inline-block;
-        background: var(--bg-2);
-        color: var(--text-3);
-        padding: 2px 7px;
-        border-radius: 5px;
-        font-size: 9px;
-        font-weight: 600;
-        margin-left: 4px;
-        letter-spacing: 0.5px;
-        border: 1px solid var(--border);
     }}
     
     /* ═══ METRICS ═══ */
     [data-testid="stMetric"] {{
         background: var(--surface);
         border: 1px solid var(--border);
-        border-radius: 14px;
-        padding: 14px 18px;
+        border-radius: 16px;
+        padding: 16px 20px;
     }}
     [data-testid="stMetricValue"] {{
         color: var(--text) !important;
-        font-size: 20px !important;
-        font-weight: 600 !important;
+        font-size: 22px !important;
+        font-weight: 700 !important;
         font-family: 'JetBrains Mono', monospace !important;
     }}
     [data-testid="stMetricLabel"] {{
         color: var(--text-3) !important;
         font-size: 11px !important;
-        font-weight: 500 !important;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
+        font-weight: 600 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.5px !important;
     }}
     
     /* ═══ IMAGE ═══ */
@@ -940,13 +1054,15 @@ st.markdown(f"""
     }}
     
     /* ═══ ALERTS ═══ */
-    .stAlert {{
+    .stAlert, [data-baseweb="notification"] {{
         background: var(--surface) !important;
         border: 1px solid var(--border) !important;
         border-radius: 14px !important;
         color: var(--text) !important;
     }}
-    .stAlert p {{ color: var(--text) !important; }}
+    .stAlert p, .stAlert div, [data-baseweb="notification"] p {{ 
+        color: var(--text) !important; 
+    }}
     
     /* Caption */
     [data-testid="stCaptionContainer"] {{
@@ -954,11 +1070,24 @@ st.markdown(f"""
         font-size: 12px !important;
     }}
     
-    /* Warning color */
-    [data-baseweb="notification"] {{
-        background: var(--surface) !important;
-        border-radius: 14px !important;
+    /* Warning/Error/Success text */
+    .stSuccess {{
+        background: {"rgba(74, 222, 128, 0.1)" if THEME == "dark" else "rgba(16, 163, 127, 0.05)"} !important;
+        border-color: var(--success) !important;
+        color: var(--success) !important;
     }}
+    .stError {{
+        background: {"rgba(248, 113, 113, 0.1)" if THEME == "dark" else "rgba(239, 68, 68, 0.05)"} !important;
+        border-color: var(--danger) !important;
+    }}
+    .stWarning {{
+        background: var(--bg-2) !important;
+        border-color: var(--border) !important;
+        color: var(--text) !important;
+    }}
+    
+    /* Checkbox */
+    .stCheckbox label {{ color: var(--text) !important; font-size: 13px !important; }}
     
     /* Scrollbar */
     ::-webkit-scrollbar {{ width: 10px; height: 10px; }}
@@ -968,43 +1097,31 @@ st.markdown(f"""
         border-radius: 100px;
         border: 2px solid var(--bg);
     }}
-    ::-webkit-scrollbar-thumb:hover {{ background: var(--border-h); }}
+    ::-webkit-scrollbar-thumb:hover {{ background: var(--accent); }}
     
-    /* Success message */
-    .stSuccess {{
-        background: {'rgba(16, 163, 127, 0.1)' if THEME == 'dark' else 'rgba(16, 163, 127, 0.05)'} !important;
-        border-color: var(--accent) !important;
-        color: var(--accent) !important;
-    }}
+    /* Markdown text */
+    .stMarkdown, .stMarkdown p, .stMarkdown span {{ color: var(--text) !important; }}
     
-    /* Error message */
-    .stError {{
-        background: {'rgba(239, 68, 68, 0.1)' if THEME == 'dark' else 'rgba(239, 68, 68, 0.05)'} !important;
-        border-color: var(--danger) !important;
-    }}
-    
-    /* Progress (native) */
-    .stProgress > div > div > div > div {{
-        background: var(--accent) !important;
-    }}
+    /* Container */
+    [data-testid="stVerticalBlock"] {{ gap: 0.5rem; }}
 </style>
 """, unsafe_allow_html=True)
 
-# ═══════════ NAVBAR ═══════════
-nav_l, nav_r = st.columns([6, 1])
+# ═══════════ NAV ═══════════
+nav_l, nav_r = st.columns([6, 1.2])
 with nav_l:
     st.markdown(f"""
-    <div class="nitro-nav">
-        <div class="nitro-logo">
-            <div class="nitro-logo-dot">N</div>
+    <div class="nav">
+        <div class="logo">
+            <div class="logo-dot">N</div>
             <span>Nitro</span>
-            <span class="nitro-badge">v2</span>
+            <span class="badge">v2</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
 with nav_r:
-    st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
-    theme_label = "☾  Dark" if THEME == "light" else "☀  Light"
+    st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+    theme_label = "☾  Scuro" if THEME == "light" else "☀  Chiaro"
     if st.button(theme_label, key="theme_btn", type="secondary", use_container_width=True):
         st.session_state.theme = "dark" if THEME == "light" else "light"
         st.rerun()
@@ -1014,16 +1131,16 @@ if "models" not in st.session_state:
     try: st.session_state.models = run(fetch_models())
     except Exception as e:
         st.session_state.models = []
-        st.error(f"Models load error: {e}")
+        st.error(f"Errore caricamento modelli: {e}")
 if "images" not in st.session_state: st.session_state.images = []
 if "last_result" not in st.session_state: st.session_state.last_result = None
 
 PHASE_LABELS = {
-    "init": "Initializing",
-    "account": "Preparing account",
-    "signup": "Setting up new session",
-    "submit": "Submitting request",
-    "render": "Generating image",
+    "init": "Inizializzazione",
+    "account": "Preparazione sessione",
+    "signup": "Configurazione servizio",
+    "submit": "Invio richiesta",
+    "render": "Generazione in corso",
 }
 
 def render_progress(percent, phase, elapsed, eta, extra=""):
@@ -1043,20 +1160,21 @@ def render_progress(percent, phase, elapsed, eta, extra=""):
             <div class="np-fill" style="width: {percent:.4f}%;"></div>
         </div>
         <div class="np-meta">
-            <span>{elapsed:.2f}s elapsed</span>
+            <span>{elapsed:.2f}s trascorsi</span>
             <span class="np-phase">{phase}</span>
-            <span>~{eta:.1f}s remaining</span>
+            <span>~{eta:.1f}s rimanenti</span>
         </div>
     </div>
     """
 
 def render_done(elapsed, count):
+    imgs_word = "immagine" if count == 1 else "immagini"
     return f"""
     <div class="np-wrap done">
         <div class="np-head">
             <div class="np-label">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
-                <span>Complete</span>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                <span>Completato</span>
             </div>
             <div class="np-pct">100.00%</div>
         </div>
@@ -1064,61 +1182,80 @@ def render_done(elapsed, count):
             <div class="np-fill" style="width: 100%;"></div>
         </div>
         <div class="np-meta">
-            <span>{elapsed:.2f}s total</span>
-            <span class="np-phase">success</span>
-            <span>{count} {"image" if count == 1 else "images"}</span>
+            <span>{elapsed:.2f}s totali</span>
+            <span class="np-phase">successo</span>
+            <span>{count} {imgs_word}</span>
         </div>
     </div>
     """
 
 def placeholder():
-    return '<div class="np-placeholder">Your generated image will appear here</div>'
+    return '''<div class="np-placeholder">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+        <div>La tua immagine apparirà qui</div>
+    </div>'''
 
 # ═══════════ TABS ═══════════
-tab_gen, tab_bulk, tab_models = st.tabs(["Generate", "Bulk", "Models"])
+tab_gen, tab_bulk, tab_models = st.tabs(["Genera", "Multiplo", "Modelli"])
 
-# ═══════════ GENERATE ═══════════
+# ═══════════ GENERA ═══════════
 with tab_gen:
     col_l, col_r = st.columns([1, 1.4], gap="large")
     
     with col_l:
-        st.markdown('<div class="sec-label">Prompt</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sec-label">Descrizione</div>', unsafe_allow_html=True)
         prompt = st.text_area("p", height=130, label_visibility="collapsed",
-                              placeholder="Describe the image you want to create...")
+                              placeholder="Descrivi l'immagine che vuoi creare...")
         
-        st.markdown('<div class="sec-label">Model</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sec-label">Modello</div>', unsafe_allow_html=True)
         models = st.session_state.models or []
         m_sel = None
         if models:
-            sorted_m = sorted(models, key=lambda x: (_mc(x), _mk(x)))
-            labels = [f"{_mk(m)} — {_mc(m)}cr" for m in sorted_m]
+            # Ordina per tempo di generazione (più veloce prima)
+            sorted_m = sorted(models, key=lambda x: (_mtime(x), _mk(x)))
+            labels = [_mn(m) or _mk(m) for m in sorted_m]
             sel = st.selectbox("m", range(len(labels)),
                                format_func=lambda i: labels[i], label_visibility="collapsed")
             m_sel = sorted_m[sel]
         else:
-            st.warning("No models loaded")
+            st.warning("Nessun modello disponibile")
         
         c1, c2 = st.columns(2)
         with c1:
+            st.markdown('<div class="sec-label">Formato</div>', unsafe_allow_html=True)
             dims = _mdims(m_sel) if m_sel else ["1:1"]
             if not dims: dims = ["1:1"]
-            dim_sel = st.selectbox("Aspect ratio", dims)
+            dim_sel = st.selectbox("d", dims, 
+                                    format_func=lambda x: DIM_LABEL.get(x, x),
+                                    label_visibility="collapsed")
         with c2:
+            st.markdown('<div class="sec-label">Quantità</div>', unsafe_allow_html=True)
             max_c = _mocl(m_sel) if m_sel else 4
-            count = st.number_input("Count", 1, max_c or 4, 1)
+            count = st.number_input("c", 1, max_c or 4, 1, label_visibility="collapsed")
         
         ref_urls = None
         if m_sel and m_sel.get("referenceImage"):
-            st.markdown('<div class="sec-label">Reference image URL</div>', unsafe_allow_html=True)
-            ref = st.text_input("r", placeholder="https://...", label_visibility="collapsed")
-            if ref.strip(): ref_urls = [ref.strip()]
+            st.markdown('<div class="sec-label">Immagine di riferimento (opzionale)</div>', unsafe_allow_html=True)
+            uploaded = st.file_uploader("u", type=["png", "jpg", "jpeg", "webp"],
+                                         accept_multiple_files=False,
+                                         label_visibility="collapsed",
+                                         help="Trascina qui un'immagine o clicca per selezionarla")
+            if uploaded is not None:
+                img_bytes = uploaded.read()
+                ext = uploaded.name.lower().split(".")[-1]
+                mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+                        "webp": "image/webp"}.get(ext, "image/png")
+                b64 = base64.b64encode(img_bytes).decode("ascii")
+                ref_urls = [f"data:{mime};base64,{b64}"]
+                # Preview miniatura
+                st.image(uploaded, width=120)
         
-        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
-        gen_btn = st.button("Generate", use_container_width=True,
+        st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+        gen_btn = st.button("Genera immagine", use_container_width=True,
                             disabled=not m_sel or not prompt.strip(), key="gen_btn")
     
     with col_r:
-        st.markdown('<div class="sec-label">Output</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sec-label">Risultato</div>', unsafe_allow_html=True)
         output_slot = st.empty()
         metrics_slot = st.empty()
         progress_slot = st.empty()
@@ -1127,11 +1264,10 @@ with tab_gen:
             r = st.session_state.last_result
             if r:
                 with metrics_slot.container():
-                    m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("Time", f"{r.duration_s:.2f}s")
-                    m2.metric("Cost", f"{r.credits_used}cr")
-                    m3.metric("Model", r.model[:12])
-                    m4.metric("Images", len(st.session_state.images))
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Tempo", f"{r.duration_s:.2f}s")
+                    m2.metric("Modello", r.model[:14])
+                    m3.metric("Immagini", len(st.session_state.images))
             with output_slot.container():
                 cols = st.columns(min(2, len(st.session_state.images)))
                 for i, img in enumerate(st.session_state.images):
@@ -1178,7 +1314,7 @@ with tab_gen:
             status = progress_state.get("status", "")
             pid = progress_state.get("pid", "")
             eta = max(0, est - elapsed)
-            extra = pid if pid else status
+            extra = ""  # niente PID/status tecnici visibili
             progress_slot.markdown(
                 render_progress(progress, phase, elapsed, eta, extra),
                 unsafe_allow_html=True)
@@ -1190,7 +1326,7 @@ with tab_gen:
         
         if result_holder["error"]:
             err = result_holder["error"]
-            progress_slot.error(f"**{type(err).__name__}** — {str(err)[:300]}")
+            progress_slot.error(f"Errore durante la generazione: {str(err)[:200]}")
             output_slot.markdown(placeholder(), unsafe_allow_html=True)
         else:
             result = result_holder["result"]
@@ -1207,11 +1343,10 @@ with tab_gen:
             st.session_state.last_result = result
             
             with metrics_slot.container():
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Time", f"{result.duration_s:.2f}s")
-                m2.metric("Cost", f"{result.credits_used}cr")
-                m3.metric("Model", result.model[:12])
-                m4.metric("Images", len(images))
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Tempo", f"{result.duration_s:.2f}s")
+                m2.metric("Modello", result.model[:14])
+                m3.metric("Immagini", len(images))
             
             with output_slot.container():
                 if images:
@@ -1222,45 +1357,53 @@ with tab_gen:
                             buf = io.BytesIO()
                             img.save(buf, format="PNG")
                             st.download_button(
-                                f"Download #{i+1}",
+                                f"Scarica #{i+1}",
                                 buf.getvalue(),
                                 file_name=f"nitro_{int(time.time())}_{i}.png",
                                 mime="image/png",
                                 key=f"dl_{i}_{time.time()}",
                                 use_container_width=True)
                 else:
-                    st.warning("No images returned")
+                    st.warning("Nessuna immagine ricevuta")
 
 
-# ═══════════ BULK ═══════════
+# ═══════════ MULTIPLO ═══════════
 with tab_bulk:
-    st.markdown('<div class="sec-label">Prompts (one per line)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sec-label">Descrizioni (una per riga)</div>', unsafe_allow_html=True)
     bulk_prompts = st.text_area("b", height=200,
-        placeholder="a red dragon\na blue phoenix\na cybernetic samurai...",
+        placeholder="un drago rosso\nuna fenice blu\nun samurai cibernetico...",
         label_visibility="collapsed")
     
     bc1, bc2, bc3 = st.columns(3)
     with bc1:
+        st.markdown('<div class="sec-label">Modello</div>', unsafe_allow_html=True)
         models = st.session_state.models or []
         bulk_m = None
         if models:
-            sorted_m = sorted(models, key=lambda x: _mc(x))
-            blabels = [f"{_mk(m)} — {_mc(m)}cr" for m in sorted_m]
-            bidx = st.selectbox("Model", range(len(blabels)),
-                                format_func=lambda i: blabels[i], key="bm")
+            sorted_m = sorted(models, key=lambda x: _mtime(x))
+            blabels = [_mn(m) or _mk(m) for m in sorted_m]
+            bidx = st.selectbox("bm", range(len(blabels)),
+                                format_func=lambda i: blabels[i], key="bm",
+                                label_visibility="collapsed")
             bulk_m = sorted_m[bidx]
     with bc2:
-        bulk_dim = st.selectbox("Aspect", _mdims(bulk_m) or ["1:1"] if bulk_m else ["1:1"], key="bd")
+        st.markdown('<div class="sec-label">Formato</div>', unsafe_allow_html=True)
+        bd_dims = _mdims(bulk_m) if bulk_m else ["1:1"]
+        if not bd_dims: bd_dims = ["1:1"]
+        bulk_dim = st.selectbox("bd", bd_dims,
+                                 format_func=lambda x: DIM_LABEL.get(x, x),
+                                 key="bd", label_visibility="collapsed")
     with bc3:
-        bulk_conc = st.number_input("Concurrency", 1, 8, 3, key="bc")
+        st.markdown('<div class="sec-label">Contemporanee</div>', unsafe_allow_html=True)
+        bulk_conc = st.number_input("bc", 1, 8, 3, key="bc", label_visibility="collapsed")
     
-    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
-    bulk_go = st.button("Run bulk", use_container_width=True, disabled=not bulk_m, key="bulk_go")
+    st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+    bulk_go = st.button("Genera tutte", use_container_width=True, disabled=not bulk_m, key="bulk_go")
     
     if bulk_go:
         prompts = [p.strip() for p in bulk_prompts.split("\n") if p.strip()]
         if not prompts:
-            st.error("Provide at least one prompt")
+            st.error("Inserisci almeno una descrizione")
         else:
             progress_slot_bulk = st.empty()
             results_area = st.container()
@@ -1305,7 +1448,6 @@ with tab_bulk:
             t.join(timeout=1)
             elapsed_final = time.perf_counter() - start
             ok = sum(1 for r in state["results"] if isinstance(r, Result))
-            fail = len(state["results"]) - ok
             
             progress_slot_bulk.markdown(render_done(elapsed_final, ok), unsafe_allow_html=True)
             
@@ -1318,40 +1460,38 @@ with tab_bulk:
                             with cols[j % len(cols)]:
                                 st.image(url, use_container_width=True)
                     else:
-                        err = str(r) if isinstance(r, Exception) else "no output"
+                        err = str(r) if isinstance(r, Exception) else "nessun output"
                         st.error(f"{i+1}. {prompts[i][:60]} — {err[:80]}")
 
 
-# ═══════════ MODELS ═══════════
+# ═══════════ MODELLI ═══════════
 with tab_models:
     top_c1, top_c2, top_c3 = st.columns([2, 1, 1])
     with top_c1:
-        st.markdown('<div class="sec-label">Model catalog</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sec-label">Elenco modelli disponibili</div>', unsafe_allow_html=True)
     with top_c2:
-        filter_ref = st.checkbox("Reference only")
+        filter_ref = st.checkbox("Solo con riferimento")
     with top_c3:
-        if st.button("Refresh", use_container_width=True, key="refresh_btn"):
+        if st.button("Aggiorna", use_container_width=True, key="refresh_btn"):
             try:
                 st.session_state.models = run(fetch_models(force=True))
-                st.success(f"Reloaded {len(st.session_state.models)} models")
+                st.success(f"Caricati {len(st.session_state.models)} modelli")
                 st.rerun()
             except Exception as e:
-                st.error(f"Refresh failed: {e}")
+                st.error(f"Errore: {e}")
     
     models = st.session_state.models or []
     if filter_ref:
         models = [m for m in models if m.get("referenceImage")]
     
-    st.caption(f"{len(models)} models · sorted by cost")
+    st.caption(f"{len(models)} modelli disponibili · ordinati per velocità")
     
-    for m in sorted(models, key=lambda x: _mc(x)):
-        k, n, c = _mk(m), _mn(m), _mc(m)
-        dims = " · ".join(_mdims(m)[:5])
-        cost_cls = "a" if c <= 10 else "b" if c <= 15 else "c"
+    for m in sorted(models, key=lambda x: _mtime(x)):
+        k, n = _mk(m), _mn(m)
+        dims = " · ".join([DIM_LABEL.get(d, d) for d in _mdims(m)[:4]])
         tags = ""
-        if m.get("referenceImage"): tags += '<span class="tag">REF</span>'
+        if m.get("referenceImage"): tags += '<span class="tag">RIF</span>'
         if m.get("cfg"): tags += '<span class="tag">CFG</span>'
-        if m.get("seed"): tags += '<span class="tag">SEED</span>'
         max_out = _mocl(m)
         if max_out and max_out > 1: tags += f'<span class="tag">×{max_out}</span>'
         et = _mtime(m)
@@ -1359,10 +1499,9 @@ with tab_models:
         st.markdown(f"""
         <div class="mcard">
             <div>
-                <div><span class="mkey">{k}</span>{tags}</div>
-                <div class="mname">{n}</div>
-                <div class="minfo">{dims} · ~{et:.0f}s</div>
+                <div><span class="mkey">{n or k}</span>{tags}</div>
+                <div class="minfo">{dims}</div>
             </div>
-            <div class="cost {cost_cls}">{c}cr</div>
+            <div class="mtime">~{et:.0f}s</div>
         </div>
         """, unsafe_allow_html=True)
