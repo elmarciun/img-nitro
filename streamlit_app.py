@@ -1,12 +1,12 @@
 """
 Nitro · Neural Image Generation Pipeline
-Fully automated · Multi-model · AI prompt enhancement · Reference upload
+Fully automated · Multi-model · Reference image upload
 """
 from __future__ import annotations
 import asyncio, base64, json, os, random, re, string, time, io, threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional
 import httpx
 import streamlit as st
 from PIL import Image
@@ -26,7 +26,6 @@ PAY    = "https://payment.davinci.ai/api/v1/auth"
 FS_BASE  = "https://firestore.googleapis.com/v1/projects/davinciweb-b8892/databases/(default)/documents"
 MAIL     = "https://mail808.elmarciun.workers.dev"
 FILES808 = "https://808files.elmarciun.workers.dev"
-NVIDIA   = "https://elmarcito-nvidia.hf.space/v1"
 
 SD = Path(__file__).parent.resolve()
 ACCS_FILE    = SD / "accounts.json"
@@ -63,37 +62,11 @@ DIM_LABEL = {
     "auto": "Automatico",
 }
 
-LLM_MODELS = {
-    "auto":      {"key": "meta/llama-3.3-70b-instruct", "label": "Automatico (consigliato)"},
-    "fast":      {"key": "meta/llama-3.1-8b-instruct",  "label": "Veloce (Llama 8B)"},
-    "smart":     {"key": "meta/llama-3.3-70b-instruct", "label": "Intelligente (Llama 70B)"},
-    "reasoning": {"key": "nvidia/nemotron-3-nano-omni", "label": "Ragionamento (Nemotron)"},
-    "creative":  {"key": "qwen/qwen3-next-80b",         "label": "Creativo (Qwen 80B)"},
-    "translate": {"key": "sarvamai/sarvam-m",           "label": "Traduzione"},
-}
-
-ENHANCE_SYS = """Sei un assistente esperto nella creazione di prompt per generatori di immagini AI.
-
-Trasforma la descrizione dell'utente in un prompt IN INGLESE altamente dettagliato, cinematografico e visivamente ricco.
-
-REGOLE:
-1. Traduci sempre in inglese perfetto
-2. Aggiungi dettagli visivi: illuminazione, atmosfera, stile, angolazione, materiali, colori
-3. Se l'utente menziona PIÙ SOGGETTI (es. "goku che combatte drago e fenice"), assicurati che TUTTI i soggetti siano nel prompt finale
-4. Mantieni fedelmente l'INTENZIONE originale, non aggiungere elementi non richiesti
-5. Aggiungi termini di qualità: "highly detailed", "8k", "cinematic" o "epic anime style" quando appropriato
-6. Rispondi SOLO con il prompt migliorato, senza spiegazioni né virgolette né prefissi
-7. Massimo 100 parole
-
-Esempi:
-Input: "un gatto sul divano"
-Output: A fluffy orange tabby cat resting on a plush grey velvet sofa, cozy living room with soft afternoon sunlight, warm ambient lighting, shallow depth of field, professional photography, highly detailed, 8k
-
-Input: "goku che combatte drago rosso e fenice"
-Output: Epic anime battle scene, Goku in Ultra Instinct form with silver hair and glowing aura, simultaneously fighting a massive red fire-breathing dragon and a majestic flame phoenix, dynamic action pose, energy blasts, dramatic sky, mountain battlefield, vibrant anime art style, highly detailed, cinematic composition"""
-
 _OTP_RE = re.compile(r"\b(\d{6})\b")
 _PWC = string.ascii_letters + string.digits + "!@#$%"
+
+# Thread lock per accesso file account (fix bulk race condition)
+_ACC_LOCK = threading.Lock()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -215,7 +188,7 @@ async def upload_808files(image_bytes: bytes, filename: str) -> Optional[str]:
             ext = filename.lower().split(".")[-1] if "." in filename else "png"
             mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
                     "webp": "image/webp", "gif": "image/gif"}.get(ext, "image/png")
-            
+
             files = {"file": (filename, image_bytes, mime)}
             data = {"token": token}
             r2 = await c.post("https://upload.gofile.io/uploadfile",
@@ -242,38 +215,6 @@ async def upload_808files(image_bytes: bytes, filename: str) -> Optional[str]:
                 return reg["stream"]
         except Exception as e:
             print(f"[808files] {e}")
-    return None
-
-
-# ═══════════════════════════════════════════════════════════════════
-#                       AI PROMPT ENHANCER (Nvidia)
-# ═══════════════════════════════════════════════════════════════════
-async def enhance_prompt(user_prompt: str,
-                          model_key: str = "meta/llama-3.3-70b-instruct",
-                          has_reference: bool = False) -> Optional[str]:
-    """Chiama LLM Nvidia per migliorare/tradurre il prompt utente."""
-    system = ENHANCE_SYS
-    if has_reference:
-        system += "\n\nIMPORTANTE: L'utente sta usando un'IMMAGINE DI RIFERIMENTO. Integra nel prompt riferimenti come 'this person', 'this face', 'same identity as reference' mantenendo coerenza."
-    
-    body = {"message": user_prompt, "model": model_key, "system": system}
-    async with httpx.AsyncClient(timeout=60) as c:
-        try:
-            r = await c.post(f"{NVIDIA}/chat", json=body,
-                             headers={"content-type": "application/json"})
-            if r.status_code == 200:
-                data = r.json()
-                for k in ("response", "message", "content", "text", "answer", "reply"):
-                    v = data.get(k) if isinstance(data, dict) else None
-                    if isinstance(v, str) and v.strip():
-                        return v.strip().strip('"').strip("'")
-                if isinstance(data, dict) and "data" in data and isinstance(data["data"], dict):
-                    for k in ("response", "message", "content", "text"):
-                        v = data["data"].get(k)
-                        if v: return str(v).strip().strip('"').strip("'")
-                if isinstance(data, str): return data.strip()
-        except Exception as e:
-            print(f"[enhance] {e}")
     return None
 
 
@@ -340,17 +281,20 @@ def resolve_dim(m, ud):
 #                    ACCOUNTS PERSISTENCE
 # ═══════════════════════════════════════════════════════════════════
 def load_accs() -> list:
-    if not ACCS_FILE.exists(): return []
-    try: return json.loads(ACCS_FILE.read_text(encoding="utf-8"))
-    except: return []
+    with _ACC_LOCK:
+        if not ACCS_FILE.exists(): return []
+        try: return json.loads(ACCS_FILE.read_text(encoding="utf-8"))
+        except: return []
 
 def save_accs(accs: list):
-    try:
-        ACCS_FILE.parent.mkdir(exist_ok=True, parents=True)
-        tmp = ACCS_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(accs, indent=2, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, ACCS_FILE)
-    except: pass
+    with _ACC_LOCK:
+        try:
+            ACCS_FILE.parent.mkdir(exist_ok=True, parents=True)
+            tmp = ACCS_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(accs, indent=2, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, ACCS_FILE)
+        except Exception as e:
+            print(f"[save_accs] {e}")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -429,7 +373,7 @@ def _urls(doc):
 
 
 # ═══════════════════════════════════════════════════════════════════
-#                       CREDITS & ACCOUNT
+#                       CREDITS & ACCOUNT PICKER
 # ═══════════════════════════════════════════════════════════════════
 async def check_credits(tok):
     try:
@@ -451,23 +395,33 @@ async def _ensure_tok(acc):
         except: pass
     return tok
 
-async def auto_pick_account(need_cr: int, progress_state=None):
-    accs = load_accs()
-    accs_sorted = sorted(accs, key=lambda a: -int(a.get("credits", 0)))
-    for acc in accs_sorted:
-        try:
-            tok = await _ensure_tok(acc)
-            cr = await check_credits(tok)
-            acc["credits"] = cr
-            if cr >= need_cr:
-                save_accs(accs)
-                return acc
-        except: continue
-    save_accs(accs)
-    if progress_state: progress_state["phase"] = "signup"
-    new = await signup_one()
-    accs.append(new); save_accs(accs)
-    return new
+# Async lock per serializzare la scelta account (evita signup duplicati)
+_PICK_LOCK = asyncio.Lock()
+
+async def auto_pick_account(need_cr: int, progress_state=None, exclude_ids=None) -> dict:
+    """Trova account con crediti; se nessuno disponibile ne crea uno nuovo (thread-safe)."""
+    exclude_ids = exclude_ids or set()
+    async with _PICK_LOCK:
+        accs = load_accs()
+        accs_sorted = sorted(accs, key=lambda a: -int(a.get("credits", 0)))
+        for acc in accs_sorted:
+            if acc.get("local_id") in exclude_ids:
+                continue
+            try:
+                tok = await _ensure_tok(acc)
+                cr = await check_credits(tok)
+                acc["credits"] = cr
+                if cr >= need_cr:
+                    save_accs(accs)
+                    return acc
+            except: continue
+        save_accs(accs)
+        if progress_state: progress_state["phase"] = "signup"
+        new = await signup_one()
+        accs = load_accs()
+        accs.append(new)
+        save_accs(accs)
+        return new
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -525,16 +479,13 @@ class Result:
     model: str = ""
     dimension: str = ""
     duration_s: float = 0.0
-    original_prompt: str = ""
-    final_prompt: str = ""
+    prompt: str = ""
 
 
 async def do_generate(prompt: str, model_key: str, dimension: str = "1:1",
                       count: int = 1, reference_urls=None, reference_bytes=None,
                       reference_filename: Optional[str] = None, art_style_id: int = 0,
-                      enhance: bool = False,
-                      enhance_model: str = "meta/llama-3.3-70b-instruct",
-                      progress_state=None) -> Result:
+                      progress_state=None, max_retries: int = 3) -> Result:
     models = await fetch_models()
     m = find_model(models, model_key)
     if not m: raise RuntimeError(f"Modello '{model_key}' non trovato")
@@ -542,25 +493,9 @@ async def do_generate(prompt: str, model_key: str, dimension: str = "1:1",
 
     if progress_state:
         progress_state["phase"] = "init"
-        progress_state["est_time"] = _mtime(m) + 15 + (25 if reference_bytes else 0) + (8 if enhance else 0)
+        progress_state["est_time"] = _mtime(m) + 15 + (25 if reference_bytes else 0)
 
-    # Enhance prompt
-    final_prompt = prompt
-    if enhance:
-        if progress_state: progress_state["phase"] = "enhance"
-        enhanced = await enhance_prompt(prompt, enhance_model,
-                                         has_reference=bool(reference_bytes or reference_urls))
-        if enhanced and len(enhanced) > 10:
-            final_prompt = enhanced
-            if progress_state: progress_state["enhanced_prompt"] = enhanced
-
-    # Pick account
-    if progress_state: progress_state["phase"] = "account"
-    acc = await auto_pick_account(need, progress_state=progress_state)
-    tok = await _ensure_tok(acc); uid = _uid(tok)
-    if not uid: raise RuntimeError("Sessione non valida")
-
-    # Upload reference
+    # Upload reference (una volta sola, prima del retry loop)
     final_ref_urls = list(reference_urls) if reference_urls else []
     if reference_bytes:
         if progress_state: progress_state["phase"] = "upload"
@@ -569,25 +504,48 @@ async def do_generate(prompt: str, model_key: str, dimension: str = "1:1",
             raise RuntimeError("Upload immagine fallito")
         final_ref_urls.insert(0, uploaded_url)
 
-    # Submit
-    if progress_state: progress_state["phase"] = "submit"
+    # Retry loop con account rotation
+    tried_ids = set()
+    last_err = None
     t0 = time.perf_counter()
-    async with _client(timeout=60) as c:
-        ah = {**H_JSON, "x-platform": "web", "x-token": tok}
-        payload = _build_payload(m, final_prompt, dim, count, art_style_id,
-                                  ref_urls=final_ref_urls if final_ref_urls else None)
-        resp = await _post(c, f"{API}/process/txt-image", payload, ah)
-        pid = _pid(resp)
-        if not pid: raise RuntimeError(f"Impossibile creare job: {resp}")
-        if progress_state:
-            progress_state["phase"] = "render"
-            progress_state["pid"] = pid[:12]
-        doc = await _poll(c, tok, uid, pid, progress_state=progress_state)
 
-    dur = time.perf_counter() - t0
-    return Result(urls=_urls(doc), process_id=pid, model=_mk(m),
-                  dimension=dim, duration_s=dur,
-                  original_prompt=prompt, final_prompt=final_prompt)
+    for attempt in range(max_retries):
+        try:
+            if progress_state: progress_state["phase"] = "account"
+            acc = await auto_pick_account(need, progress_state=progress_state, exclude_ids=tried_ids)
+            tried_ids.add(acc.get("local_id"))
+            tok = await _ensure_tok(acc)
+            uid = _uid(tok)
+            if not uid:
+                last_err = RuntimeError("Sessione non valida")
+                continue
+
+            if progress_state: progress_state["phase"] = "submit"
+            async with _client(timeout=60) as c:
+                ah = {**H_JSON, "x-platform": "web", "x-token": tok}
+                payload = _build_payload(m, prompt, dim, count, art_style_id,
+                                          ref_urls=final_ref_urls if final_ref_urls else None)
+                resp = await _post(c, f"{API}/process/txt-image", payload, ah)
+                pid = _pid(resp)
+                if not pid:
+                    last_err = RuntimeError(f"Job non creato: {resp}")
+                    continue
+                if progress_state:
+                    progress_state["phase"] = "render"
+                    progress_state["pid"] = pid[:12]
+                doc = await _poll(c, tok, uid, pid, progress_state=progress_state)
+
+            dur = time.perf_counter() - t0
+            return Result(urls=_urls(doc), process_id=pid, model=_mk(m),
+                          dimension=dim, duration_s=dur, prompt=prompt)
+
+        except Exception as e:
+            last_err = e
+            print(f"[gen attempt {attempt+1}] {type(e).__name__}: {e}")
+            await asyncio.sleep(1.0 + attempt)
+            continue
+
+    raise RuntimeError(f"Generazione fallita dopo {max_retries} tentativi: {last_err}")
 
 
 async def download_image(url: str) -> Optional[bytes]:
@@ -885,7 +843,7 @@ div[data-testid="stButton"] > button:disabled {{ background: var(--bg-3) !import
 
 .api-block {{ background: var(--surface); border: 1px solid var(--border);
     border-radius: 20px; padding: 24px 28px; margin-bottom: 20px; box-shadow: var(--shadow); }}
-.api-title {{ display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }}
+.api-title {{ display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }}
 .api-method {{ display: inline-block; padding: 4px 12px; border-radius: 8px;
     font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }}
 .api-method.post {{ background: {"rgba(74, 222, 128, 0.15)" if THEME == "dark" else "rgba(16, 163, 127, 0.1)"};
@@ -894,8 +852,8 @@ div[data-testid="stButton"] > button:disabled {{ background: var(--bg-3) !import
     color: #60a5fa; border: 1px solid #60a5fa; }}
 .api-url {{ font-family: 'JetBrains Mono', monospace; font-size: 13px;
     color: var(--text); background: var(--bg-2); padding: 6px 12px;
-    border-radius: 8px; border: 1px solid var(--border); }}
-.api-desc {{ color: var(--text-2); font-size: 14px; margin: 8px 0 16px 0; line-height: 1.5; }}
+    border-radius: 8px; border: 1px solid var(--border); word-break: break-all; }}
+.api-desc {{ color: var(--text-2); font-size: 14px; margin: 8px 0 16px 0; line-height: 1.6; }}
 
 div[data-testid="stCodeBlock"] pre {{
     background: var(--code-bg) !important; color: var(--code-text) !important;
@@ -929,6 +887,7 @@ code:not(pre code) {{
 </style>
 """, unsafe_allow_html=True)
 
+
 # ═══ NAVBAR ═══
 nav_l, nav_r = st.columns([6, 1.2])
 with nav_l:
@@ -955,7 +914,6 @@ if "last_result" not in st.session_state: st.session_state.last_result = None
 
 PHASE_LABELS = {
     "init": "Inizializzazione",
-    "enhance": "L'AI sta perfezionando il tuo prompt",
     "account": "Preparazione sessione",
     "signup": "Configurazione servizio",
     "upload": "Caricamento immagine di riferimento",
@@ -1020,24 +978,8 @@ with tab_gen:
     col_l, col_r = st.columns([1, 1.4], gap="large")
     with col_l:
         st.markdown('<div class="sec-label">Descrizione</div>', unsafe_allow_html=True)
-        prompt = st.text_area("p", height=130, label_visibility="collapsed",
-                              placeholder="Descrivi in italiano quello che vuoi creare...")
-
-        # AI Enhance toggle
-        enh_c1, enh_c2 = st.columns([1, 2])
-        with enh_c1:
-            use_enhance = st.checkbox("✨ Migliora con AI", value=True,
-                                       help="L'AI traduce e ottimizza il prompt automaticamente")
-        with enh_c2:
-            if use_enhance:
-                enh_choice = st.selectbox(
-                    "e", list(LLM_MODELS.keys()),
-                    format_func=lambda k: LLM_MODELS[k]["label"],
-                    label_visibility="collapsed", index=0,
-                )
-                enh_model_key = LLM_MODELS[enh_choice]["key"]
-            else:
-                enh_model_key = None
+        prompt = st.text_area("p", height=140, label_visibility="collapsed",
+                              placeholder="Descrivi quello che vuoi creare (in inglese per risultati migliori)...")
 
         st.markdown('<div class="sec-label">Modello</div>', unsafe_allow_html=True)
         models = st.session_state.models or []
@@ -1085,7 +1027,6 @@ with tab_gen:
         st.markdown('<div class="sec-label">Risultato</div>', unsafe_allow_html=True)
         output_slot = st.empty()
         metrics_slot = st.empty()
-        prompt_slot = st.empty()
         progress_slot = st.empty()
 
         if st.session_state.images and not gen_btn:
@@ -1096,12 +1037,6 @@ with tab_gen:
                     m1.metric("Tempo", f"{r.duration_s:.2f}s")
                     m2.metric("Modello", r.model[:14])
                     m3.metric("Immagini", len(st.session_state.images))
-                if r.final_prompt and r.final_prompt != r.original_prompt:
-                    with prompt_slot.container():
-                        with st.expander("✨ Prompt migliorato dall'AI", expanded=False):
-                            st.markdown(f"**Originale:** _{r.original_prompt}_")
-                            st.markdown(f"**Migliorato:**")
-                            st.code(r.final_prompt, language=None)
             with output_slot.container():
                 cols = st.columns(min(2, len(st.session_state.images)))
                 for i, img in enumerate(st.session_state.images):
@@ -1114,12 +1049,10 @@ with tab_gen:
         st.session_state.images = []
         output_slot.markdown(placeholder(), unsafe_allow_html=True)
         metrics_slot.empty()
-        prompt_slot.empty()
 
-        est_extra = (25 if ref_bytes else 0) + (8 if use_enhance else 0)
         progress_state = {
-            "phase": "init", "status": "", "pid": "", "enhanced_prompt": "",
-            "est_time": _mtime(m_sel) + 15 + est_extra,
+            "phase": "init", "status": "", "pid": "",
+            "est_time": _mtime(m_sel) + 15 + (25 if ref_bytes else 0),
         }
         result_holder = {"result": None, "error": None, "done": False}
 
@@ -1129,8 +1062,6 @@ with tab_gen:
                     prompt=prompt, model_key=_mk(m_sel),
                     dimension=dim_sel, count=int(count),
                     reference_bytes=ref_bytes, reference_filename=ref_filename,
-                    enhance=use_enhance,
-                    enhance_model=enh_model_key or "meta/llama-3.3-70b-instruct",
                     progress_state=progress_state))
                 result_holder["result"] = res
             except Exception as e:
@@ -1160,18 +1091,11 @@ with tab_gen:
 
         if result_holder["error"]:
             err = result_holder["error"]
-            progress_slot.error(f"Errore durante la generazione: {str(err)[:200]}")
+            progress_slot.error(f"Errore durante la generazione: {str(err)[:250]}")
             output_slot.markdown(placeholder(), unsafe_allow_html=True)
         else:
             result = result_holder["result"]
             progress_slot.markdown(render_done(elapsed_final, len(result.urls)), unsafe_allow_html=True)
-
-            if result.final_prompt and result.final_prompt != result.original_prompt:
-                with prompt_slot.container():
-                    with st.expander("✨ Prompt migliorato dall'AI", expanded=True):
-                        st.markdown(f"**Originale:** _{result.original_prompt}_")
-                        st.markdown(f"**Migliorato:**")
-                        st.code(result.final_prompt, language=None)
 
             images = []
             for url in result.urls:
@@ -1210,20 +1134,8 @@ with tab_gen:
 with tab_bulk:
     st.markdown('<div class="sec-label">Descrizioni (una per riga)</div>', unsafe_allow_html=True)
     bulk_prompts = st.text_area("b", height=200,
-        placeholder="un drago rosso\nuna fenice blu\ngoku che combatte entrambi...",
+        placeholder="a red dragon flying over volcano\na blue phoenix in aurora sky\ncyberpunk samurai...",
         label_visibility="collapsed")
-
-    b_enh_c1, b_enh_c2 = st.columns([1, 2])
-    with b_enh_c1:
-        bulk_use_enhance = st.checkbox("✨ Migliora ogni prompt con AI", value=True, key="bulk_enh")
-    with b_enh_c2:
-        if bulk_use_enhance:
-            b_enh = st.selectbox("be", list(LLM_MODELS.keys()),
-                                  format_func=lambda k: LLM_MODELS[k]["label"],
-                                  key="be", label_visibility="collapsed", index=1)
-            bulk_enh_model = LLM_MODELS[b_enh]["key"]
-        else:
-            bulk_enh_model = None
 
     bc1, bc2, bc3 = st.columns(3)
     with bc1:
@@ -1246,7 +1158,8 @@ with tab_bulk:
                                  key="bd", label_visibility="collapsed")
     with bc3:
         st.markdown('<div class="sec-label">Contemporanee</div>', unsafe_allow_html=True)
-        bulk_conc = st.number_input("bc", 1, 8, 3, key="bc", label_visibility="collapsed")
+        bulk_conc = st.number_input("bc", 1, 5, 2, key="bc", label_visibility="collapsed",
+                                     help="Numero di generazioni in parallelo (max consigliato: 3)")
 
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
     bulk_go = st.button("Genera tutte", use_container_width=True, disabled=not bulk_m, key="bulk_go")
@@ -1267,8 +1180,7 @@ with tab_bulk:
                         try:
                             r = await do_generate(
                                 prompt=p, model_key=_mk(bulk_m), dimension=bulk_dim,
-                                enhance=bulk_use_enhance,
-                                enhance_model=bulk_enh_model or "meta/llama-3.1-8b-instruct")
+                                max_retries=3)
                             state["results"][i] = r
                         except Exception as e:
                             state["results"][i] = e
@@ -1283,7 +1195,7 @@ with tab_bulk:
 
             t = threading.Thread(target=worker, daemon=True); t.start()
             start = time.perf_counter()
-            per_prompt = _mtime(bulk_m) + 5 + (5 if bulk_use_enhance else 0)
+            per_prompt = _mtime(bulk_m) + 5
             est_total = (len(prompts) / int(bulk_conc)) * per_prompt
 
             while not holder["done"]:
@@ -1307,16 +1219,13 @@ with tab_bulk:
                 for i, r in enumerate(state["results"]):
                     if isinstance(r, Result) and r.urls:
                         st.markdown(f"**{i+1}.** {prompts[i][:70]}  ·  *{r.duration_s:.2f}s*")
-                        if r.final_prompt and r.final_prompt != r.original_prompt:
-                            with st.expander("✨ Prompt AI", expanded=False):
-                                st.code(r.final_prompt, language=None)
                         cols = st.columns(min(len(r.urls), 4))
                         for j, url in enumerate(r.urls):
                             with cols[j % len(cols)]:
                                 st.image(url, use_container_width=True)
                     else:
                         err = str(r) if isinstance(r, Exception) else "nessun output"
-                        st.error(f"{i+1}. {prompts[i][:60]} — {err[:80]}")
+                        st.error(f"{i+1}. {prompts[i][:60]} — {err[:100]}")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1370,256 +1279,541 @@ with tab_api:
     st.markdown("""
     <div class="api-block">
         <div class="api-title">
-            <span style="font-size: 22px; font-weight: 700;">Documentazione API</span>
+            <span style="font-size: 24px; font-weight: 700;">Documentazione API</span>
             <span class="badge">v1</span>
         </div>
         <div class="api-desc">
-            Integra Nitro nei tuoi progetti con semplici richieste HTTP.
-            Zero autenticazione richiesta — il servizio gestisce tutto automaticamente.
+            Le API mostrate qui sono <strong>funzionanti e testate</strong>. Usa direttamente i worker
+            (<code>808files</code>, <code>mail808</code>) e le API di davinci per replicare
+            il funzionamento di Nitro nel tuo codice. Ogni esempio è pronto da copiare e incollare.
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # ═══ /api/generate ═══
+    # ═══ 1. 808FILES UPLOAD ═══
     st.markdown("""
     <div class="api-block">
         <div class="api-title">
             <span class="api-method post">POST</span>
-            <span class="api-url">/api/generate</span>
+            <span class="api-url">https://808files.elmarciun.workers.dev/api/token</span>
+        </div>
+        <div class="api-title">
+            <span class="api-method post">POST</span>
+            <span class="api-url">https://upload.gofile.io/uploadfile</span>
+        </div>
+        <div class="api-title">
+            <span class="api-method post">POST</span>
+            <span class="api-url">https://808files.elmarciun.workers.dev/api/register</span>
         </div>
         <div class="api-desc">
-            Genera una o più immagini da una descrizione testuale.
-            Con <code>enhance: true</code> l'AI migliora automaticamente il prompt.
+            <strong>Upload file anonimo permanente (3-step).</strong>
+            Ritorna un URL diretto usabile ovunque, senza autenticazione.
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("**Body:**")
-    st.code("""{
-  "prompt": "goku che combatte drago rosso e fenice",
-  "model": "NANO_BANANA_PRO",
-  "dimension": "16:9",
-  "count": 1,
-  "enhance": true,
-  "enhance_model": "smart",
-  "reference_image_url": "https://..."
-}""", language="json")
-
-    st.markdown("**Risposta:**")
-    st.code("""{
-  "success": true,
-  "urls": ["https://storage.googleapis.com/..."],
-  "model": "NANO_BANANA_PRO",
-  "dimension": "16:9",
-  "duration_s": 12.34,
-  "original_prompt": "goku che combatte drago rosso e fenice",
-  "final_prompt": "Epic anime battle scene, Goku Ultra Instinct fighting..."
-}""", language="json")
-
-    st.markdown('<div class="sec-label">Esempi di codice</div>', unsafe_allow_html=True)
-    ex_py, ex_curl, ex_js, ex_ps = st.tabs(["Python", "cURL", "JavaScript", "PowerShell"])
-    with ex_py:
+    up_py, up_curl, up_js, up_ps = st.tabs(["Python", "cURL", "JavaScript", "PowerShell"])
+    with up_py:
         st.code('''import requests
 
-r = requests.post("https://nitro.example.com/api/generate", json={
-    "prompt": "goku che combatte drago rosso e fenice",
-    "model": "NANO_BANANA_PRO",
-    "dimension": "16:9",
-    "enhance": True
+API = "https://808files.elmarciun.workers.dev"
+
+# Step 1: ottieni token
+token = requests.post(f"{API}/api/token").json()["token"]
+
+# Step 2: upload su gofile
+with open("mia_foto.jpg", "rb") as f:
+    r = requests.post(
+        "https://upload.gofile.io/uploadfile",
+        data={"token": token},
+        files={"file": f},
+    )
+d = r.json()["data"]
+
+# Step 3: registra e ottieni URL permanente
+r = requests.post(f"{API}/api/register", json={
+    "token": token,
+    "id": d["id"],
+    "server": d.get("servers", ["store1"])[0],
+    "filename": d["name"],
+    "folder_id": d["parentFolder"],
+    "folder_code": d.get("parentFolderCode"),
+    "download_page": d["downloadPage"],
+    "size": d["size"],
+    "mimetype": d.get("mimetype", "application/octet-stream"),
 })
-data = r.json()
-for url in data["urls"]:
-    print("Immagine:", url)
-    img = requests.get(url).content
-    with open("output.png", "wb") as f:
-        f.write(img)
+result = r.json()
+print("URL diretto:", result["stream"])
+print("Link condivisione:", result["link"])
 ''', language="python")
-    with ex_curl:
-        st.code('''curl -X POST https://nitro.example.com/api/generate \\
+
+    with up_curl:
+        st.code('''# Step 1: token
+TOKEN=$(curl -s -X POST https://808files.elmarciun.workers.dev/api/token | jq -r .token)
+
+# Step 2: upload
+UPLOAD=$(curl -s -X POST https://upload.gofile.io/uploadfile \\
+    -F "token=$TOKEN" -F "file=@mia_foto.jpg")
+
+FILE_ID=$(echo $UPLOAD | jq -r .data.id)
+FILE_NAME=$(echo $UPLOAD | jq -r .data.name)
+FOLDER=$(echo $UPLOAD | jq -r .data.parentFolder)
+SERVER=$(echo $UPLOAD | jq -r '.data.servers[0]')
+SIZE=$(echo $UPLOAD | jq -r .data.size)
+PAGE=$(echo $UPLOAD | jq -r .data.downloadPage)
+
+# Step 3: register
+curl -X POST https://808files.elmarciun.workers.dev/api/register \\
   -H "Content-Type: application/json" \\
-  -d '{
-    "prompt": "goku che combatte drago rosso e fenice",
-    "model": "NANO_BANANA_PRO",
-    "dimension": "16:9",
-    "enhance": true
-  }'
+  -d "{
+    \\"token\\": \\"$TOKEN\\",
+    \\"id\\": \\"$FILE_ID\\",
+    \\"server\\": \\"$SERVER\\",
+    \\"filename\\": \\"$FILE_NAME\\",
+    \\"folder_id\\": \\"$FOLDER\\",
+    \\"download_page\\": \\"$PAGE\\",
+    \\"size\\": $SIZE,
+    \\"mimetype\\": \\"image/jpeg\\"
+  }"
 ''', language="bash")
-    with ex_js:
-        st.code('''const res = await fetch("https://nitro.example.com/api/generate", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    prompt: "goku che combatte drago rosso e fenice",
-    model: "NANO_BANANA_PRO",
-    dimension: "16:9",
-    enhance: true
-  })
-});
-const data = await res.json();
-data.urls.forEach(url => console.log(url));
+
+    with up_js:
+        st.code('''const API = "https://808files.elmarciun.workers.dev";
+
+async function upload808(file) {
+  // Step 1: token
+  const { token } = await fetch(`${API}/api/token`, {
+    method: "POST"
+  }).then(r => r.json());
+
+  // Step 2: upload su gofile
+  const fd = new FormData();
+  fd.append("token", token);
+  fd.append("file", file);
+  const uploadRes = await fetch("https://upload.gofile.io/uploadfile", {
+    method: "POST",
+    body: fd,
+  }).then(r => r.json());
+  const d = uploadRes.data;
+
+  // Step 3: register
+  const reg = await fetch(`${API}/api/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      token,
+      id: d.id,
+      server: (d.servers || ["store1"])[0],
+      filename: d.name,
+      folder_id: d.parentFolder,
+      folder_code: d.parentFolderCode,
+      download_page: d.downloadPage,
+      size: d.size,
+      mimetype: d.mimetype || "application/octet-stream",
+    }),
+  }).then(r => r.json());
+
+  return reg.stream; // URL diretto permanente
+}
+
+// Uso:
+const fileInput = document.querySelector('input[type=file]');
+const url = await upload808(fileInput.files[0]);
+console.log("URL:", url);
 ''', language="javascript")
-    with ex_ps:
-        st.code('''$body = @{
-    prompt    = "goku che combatte drago rosso e fenice"
-    model     = "NANO_BANANA_PRO"
-    dimension = "16:9"
-    enhance   = $true
+
+    with up_ps:
+        st.code('''$API = "https://808files.elmarciun.workers.dev"
+
+# Step 1: token
+$token = (Invoke-RestMethod -Uri "$API/api/token" -Method Post).token
+
+# Step 2: upload
+$form = @{
+    token = $token
+    file  = Get-Item -Path "mia_foto.jpg"
+}
+$upload = Invoke-RestMethod -Uri "https://upload.gofile.io/uploadfile" `
+    -Method Post -Form $form
+$d = $upload.data
+
+# Step 3: register
+$body = @{
+    token = $token
+    id = $d.id
+    server = $d.servers[0]
+    filename = $d.name
+    folder_id = $d.parentFolder
+    folder_code = $d.parentFolderCode
+    download_page = $d.downloadPage
+    size = $d.size
+    mimetype = $d.mimetype
 } | ConvertTo-Json
 
-$res = Invoke-RestMethod -Uri "https://nitro.example.com/api/generate" `
+$result = Invoke-RestMethod -Uri "$API/api/register" `
     -Method Post -Body $body -ContentType "application/json"
 
-foreach ($url in $res.urls) {
-    Write-Host $url
-    Invoke-WebRequest -Uri $url -OutFile "output.png"
-}
+Write-Host "URL:" $result.stream
 ''', language="powershell")
 
-    # ═══ /api/enhance ═══
-    st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
-    st.markdown("""
-    <div class="api-block">
-        <div class="api-title">
-            <span class="api-method post">POST</span>
-            <span class="api-url">/api/enhance</span>
-        </div>
-        <div class="api-desc">
-            Trasforma un prompt italiano in un prompt inglese ottimizzato per generatori AI.
-            Powered by <code>Nvidia NIM · Llama 3.3 70B</code>.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
 
-    st.code("""{
-  "prompt": "un gatto sul tetto al tramonto",
-  "model": "smart"
-}""", language="json")
-
-    ex_py_e, ex_curl_e, ex_js_e = st.tabs(["Python", "cURL", "JavaScript"])
-    with ex_py_e:
-        st.code('''import requests
-
-r = requests.post("https://nitro.example.com/api/enhance", json={
-    "prompt": "un gatto sul tetto al tramonto",
-    "model": "smart"
-})
-print(r.json()["enhanced"])
-''', language="python")
-    with ex_curl_e:
-        st.code('''curl -X POST https://nitro.example.com/api/enhance \\
-  -H "Content-Type: application/json" \\
-  -d '{"prompt": "un gatto sul tetto al tramonto", "model": "smart"}'
-''', language="bash")
-    with ex_js_e:
-        st.code('''const r = await fetch("https://nitro.example.com/api/enhance", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ prompt: "un gatto sul tetto", model: "smart" })
-});
-console.log((await r.json()).enhanced);
-''', language="javascript")
-
-    # ═══ /api/upload ═══
-    st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
-    st.markdown("""
-    <div class="api-block">
-        <div class="api-title">
-            <span class="api-method post">POST</span>
-            <span class="api-url">/api/upload</span>
-        </div>
-        <div class="api-desc">
-            Carica un'immagine per usarla come riferimento. Storage permanente via <code>808files</code>.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    ex_py_u, ex_curl_u, ex_js_u = st.tabs(["Python", "cURL", "JavaScript"])
-    with ex_py_u:
-        st.code('''import requests
-
-with open("mia_foto.jpg", "rb") as f:
-    r = requests.post("https://nitro.example.com/api/upload",
-                       files={"file": f})
-ref_url = r.json()["url"]
-
-# Genera con riferimento
-requests.post("https://nitro.example.com/api/generate", json={
-    "prompt": "questa persona in stile anime cyberpunk",
-    "model": "NANO_BANANA_PRO",
-    "reference_image_url": ref_url,
-    "enhance": True
-})
-''', language="python")
-    with ex_curl_u:
-        st.code('''curl -X POST https://nitro.example.com/api/upload -F "file=@mia_foto.jpg"
-''', language="bash")
-    with ex_js_u:
-        st.code('''const fd = new FormData();
-fd.append("file", fileInput.files[0]);
-const up = await fetch("https://nitro.example.com/api/upload", {
-  method: "POST", body: fd
-}).then(r => r.json());
-console.log(up.url);
-''', language="javascript")
-
-    # ═══ /api/models ═══
+    # ═══ 2. MAIL808 - EMAIL TEMPORANEE ═══
     st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
     st.markdown("""
     <div class="api-block">
         <div class="api-title">
             <span class="api-method get">GET</span>
-            <span class="api-url">/api/models</span>
+            <span class="api-url">https://mail808.elmarciun.workers.dev/genera</span>
+        </div>
+        <div class="api-title">
+            <span class="api-method get">GET</span>
+            <span class="api-url">https://mail808.elmarciun.workers.dev/attendi/{email}</span>
         </div>
         <div class="api-desc">
-            Elenco completo dei modelli disponibili con caratteristiche.
+            <strong>Email temporanee usa-e-getta con attesa OTP.</strong>
+            Genera indirizzi Gmail dot-trick e cattura codici a 6 cifre automaticamente.
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.code('curl https://nitro.example.com/api/models', language="bash")
+    mail_py, mail_curl, mail_js = st.tabs(["Python", "cURL", "JavaScript"])
+    with mail_py:
+        st.code('''import requests, re, time
 
-    # ═══ 808files ═══
+MAIL = "https://mail808.elmarciun.workers.dev"
+
+# Genera email temporanea Gmail
+email = requests.get(f"{MAIL}/genera?tipi=dotGmail&semplice=1").text.strip()
+print("Email:", email)
+
+# Attendi OTP a 6 cifre (max 90s)
+deadline = time.time() + 90
+while time.time() < deadline:
+    r = requests.get(f"{MAIL}/attendi/{email}", params={
+        "mittente": "davinci",
+        "codice": 1,
+        "semplice": 1,
+        "timeout": 15000,
+    }, timeout=20)
+    if r.status_code == 200 and r.text.strip():
+        match = re.search(r"\\b(\\d{6})\\b", r.text)
+        if match:
+            print("OTP:", match.group(1))
+            break
+    time.sleep(1)
+''', language="python")
+
+    with mail_curl:
+        st.code('''# Genera email
+curl "https://mail808.elmarciun.workers.dev/genera?tipi=dotGmail&semplice=1"
+
+# Attendi OTP (blocking, max 15s per chiamata)
+curl "https://mail808.elmarciun.workers.dev/attendi/your.email@gmail.com?mittente=davinci&codice=1&semplice=1&timeout=15000"
+
+# Leggi inbox
+curl "https://mail808.elmarciun.workers.dev/inbox/your.email@gmail.com"
+''', language="bash")
+
+    with mail_js:
+        st.code('''const MAIL = "https://mail808.elmarciun.workers.dev";
+
+// Genera email
+const email = (await fetch(`${MAIL}/genera?tipi=dotGmail&semplice=1`)
+  .then(r => r.text())).trim();
+console.log("Email:", email);
+
+// Attendi OTP
+const params = new URLSearchParams({
+  mittente: "davinci", codice: "1", semplice: "1", timeout: "60000"
+});
+const otp = await fetch(`${MAIL}/attendi/${email}?${params}`)
+  .then(r => r.text());
+console.log("OTP:", otp.match(/\\b(\\d{6})\\b/)?.[1]);
+''', language="javascript")
+
+
+    # ═══ 3. DAVINCI GENERATE ═══
     st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
     st.markdown("""
     <div class="api-block">
         <div class="api-title">
-            <span style="font-size: 16px; font-weight: 700;">Storage File</span>
-            <span class="badge">808files</span>
+            <span class="api-method get">GET</span>
+            <span class="api-url">https://wl-cms-web-prod.davinci.ai/image-models</span>
+        </div>
+        <div class="api-title">
+            <span class="api-method post">POST</span>
+            <span class="api-url">https://wl-api-web-prod.davinci.ai/process/txt-image</span>
         </div>
         <div class="api-desc">
-            Nitro usa <code>808files</code> per upload anonimo permanente. Endpoint diretti:
+            <strong>API dirette davinci.ai per generare immagini.</strong>
+            Richiedono un token JWT Firebase (ottenibile via signup/login automatico).
+            Ecco il flusso completo che replica quello di Nitro.
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.code('''import requests
+    dv_py = st.tabs(["Python — flusso completo"])[0]
+    with dv_py:
+        st.code('''"""
+Flusso completo per generare un'immagine su davinci.ai.
+Include signup automatico + generazione.
+"""
+import requests, time, base64, json, random, string, re
 
-API = "https://808files.elmarciun.workers.dev"
+FB_KEY = "AIzaSyACc5e0U4DUwjdve3X4Odyjb8CNcL37Qgs"
+FB_GMPID = "1:378221804375:web:32bf22971597e5ef92dc12"
+API = "https://wl-api-web-prod.davinci.ai"
+CMS = "https://wl-cms-web-prod.davinci.ai"
+FS  = "https://firestore.googleapis.com/v1/projects/davinciweb-b8892/databases/(default)/documents"
+MAIL = "https://mail808.elmarciun.workers.dev"
 
-# 1. Token
-token = requests.post(f"{API}/api/token").json()["token"]
+HEADERS = {
+    "origin": "https://davinci.ai",
+    "referer": "https://davinci.ai/",
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0) Chrome/131.0",
+}
+H_FB = {**HEADERS, "content-type": "application/json",
+        "x-firebase-gmpid": FB_GMPID,
+        "x-client-version": "Chrome/JsCore/11.10.0/FirebaseCore-web"}
 
-# 2. Upload su gofile
-with open("file.png", "rb") as f:
-    r = requests.post("https://upload.gofile.io/uploadfile",
-        data={"token": token}, files={"file": f})
-d = r.json()["data"]
 
-# 3. Registra
-r = requests.post(f"{API}/api/register", json={
-    "token": token, "id": d["id"],
-    "server": d.get("servers", ["store1"])[0],
-    "filename": d["name"], "folder_id": d["parentFolder"],
-    "folder_code": d.get("parentFolderCode"),
-    "download_page": d["downloadPage"],
-    "size": d["size"], "mimetype": d.get("mimetype", "application/octet-stream")
-})
-print("URL:", r.json()["stream"])
+def signup():
+    """Crea un account davinci con verifica email OTP."""
+    email = requests.get(f"{MAIL}/genera?tipi=dotGmail&semplice=1").text.strip()
+    pw = "".join(random.choices(string.ascii_letters + string.digits, k=14)) + "!"
+
+    d = requests.post(
+        f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={FB_KEY}",
+        headers=H_FB,
+        json={"returnSecureToken": True, "email": email,
+              "password": pw, "clientType": "CLIENT_TYPE_WEB"},
+    ).json()
+    id_token = d["idToken"]
+
+    requests.post(f"{API}/email-verification-send",
+                  headers={"content-type": "application/json"},
+                  json={"email": email})
+
+    otp = None
+    for _ in range(30):
+        time.sleep(3)
+        r = requests.get(f"{MAIL}/attendi/{email}",
+            params={"mittente": "davinci", "codice": 1, "semplice": 1, "timeout": 10000})
+        if r.status_code == 200:
+            m = re.search(r"\\b(\\d{6})\\b", r.text)
+            if m:
+                otp = m.group(1)
+                break
+    if not otp: raise RuntimeError("OTP timeout")
+
+    requests.post(f"{API}/email-verification-verify-code",
+                  headers={"content-type": "application/json"},
+                  json={"email": email, "code": otp})
+
+    d2 = requests.post(
+        f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FB_KEY}",
+        headers=H_FB,
+        json={"returnSecureToken": True, "email": email,
+              "password": pw, "clientType": "CLIENT_TYPE_WEB"},
+    ).json()
+    return d2["idToken"], d2["refreshToken"]
+
+
+def get_uid(token):
+    payload = token.split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    return json.loads(base64.urlsafe_b64decode(payload))["user_id"]
+
+
+def list_models():
+    return requests.get(f"{CMS}/image-models", headers=HEADERS).json()["data"]
+
+
+def generate(prompt, model="FLUX_2_TURBO", dimension="1:1", token=None,
+             reference_url=None):
+    """Genera immagine e ritorna URLs."""
+    if not token:
+        token, _ = signup()
+
+    uid = get_uid(token)
+    ah = {**HEADERS, "content-type": "application/json",
+          "x-platform": "web", "x-token": token}
+
+    payload = {
+        "prompt": prompt, "model": model,
+        "dimension": dimension, "artStyleId": 0, "imageCount": 1,
+    }
+    if reference_url:
+        payload["referenceImages"] = [reference_url]
+        payload["referenceImage"] = reference_url
+
+    r = requests.post(f"{API}/process/txt-image", json=payload, headers=ah)
+    data = r.json()
+    pid = data.get("processId") or (data.get("data") or [{}])[0].get("processId")
+    if not pid: raise RuntimeError(f"No PID: {data}")
+
+    url = f"{FS}/users/{uid}/processes/{pid}"
+    for _ in range(150):
+        time.sleep(2)
+        r = requests.get(url, headers={"authorization": f"Bearer {token}"})
+        if r.status_code != 200: continue
+        fields = r.json().get("fields", {})
+        status = (fields.get("status", {}).get("stringValue") or "").upper()
+        if status in ("COMPLETED", "SUCCESS", "DONE"):
+            urls = []
+            for key in ("outputs", "images", "results"):
+                arr = fields.get(key, {}).get("arrayValue", {}).get("values", [])
+                for item in arr:
+                    v = item.get("stringValue", "")
+                    if v.startswith("http"): urls.append(v)
+            return urls
+        if status in ("FAILED", "ERROR"):
+            raise RuntimeError(f"Failed: {status}")
+    raise TimeoutError("Polling timeout")
+
+
+# ══ ESEMPIO USO ══
+if __name__ == "__main__":
+    token, refresh = signup()
+    print("Token ottenuto")
+
+    urls = generate(
+        prompt="Epic anime scene of Goku fighting a red dragon",
+        model="FLUX_2_TURBO",
+        dimension="16:9",
+        token=token,
+    )
+    for u in urls:
+        print("Immagine:", u)
+''', language="python")
+
+
+    # ═══ 4. PIPELINE COMPLETA ═══
+    st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
+    st.markdown("""
+    <div class="api-block">
+        <div class="api-title">
+            <span style="font-size: 18px; font-weight: 700;">Pipeline completa · Tutto insieme</span>
+        </div>
+        <div class="api-desc">
+            Esempio end-to-end che combina <strong>upload riferimento + generazione</strong>.
+            Copia questo script per replicare il 100% delle funzionalità di Nitro nel tuo codice.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.code('''"""
+NITRO PIPELINE COMPLETA
+Requisiti: pip install requests
+"""
+import requests, re, time, base64, json, random, string
+
+# ══ CONFIG ══
+FB_KEY = "AIzaSyACc5e0U4DUwjdve3X4Odyjb8CNcL37Qgs"
+FILES = "https://808files.elmarciun.workers.dev"
+MAIL  = "https://mail808.elmarciun.workers.dev"
+API   = "https://wl-api-web-prod.davinci.ai"
+FS    = "https://firestore.googleapis.com/v1/projects/davinciweb-b8892/databases/(default)/documents"
+
+HEADERS = {
+    "origin": "https://davinci.ai", "referer": "https://davinci.ai/",
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0) Chrome/131.0",
+}
+
+# ══ 1. UPLOAD REFERENCE IMAGE ══
+def upload(file_path):
+    token = requests.post(f"{FILES}/api/token").json()["token"]
+    with open(file_path, "rb") as f:
+        u = requests.post("https://upload.gofile.io/uploadfile",
+            data={"token": token}, files={"file": f}).json()["data"]
+    r = requests.post(f"{FILES}/api/register", json={
+        "token": token, "id": u["id"],
+        "server": u.get("servers", ["store1"])[0],
+        "filename": u["name"], "folder_id": u["parentFolder"],
+        "folder_code": u.get("parentFolderCode"),
+        "download_page": u["downloadPage"],
+        "size": u["size"], "mimetype": u.get("mimetype", "image/jpeg")
+    }).json()
+    return r["stream"]
+
+# ══ 2. SIGNUP DAVINCI (25 crediti gratis) ══
+def signup():
+    email = requests.get(f"{MAIL}/genera?tipi=dotGmail&semplice=1").text.strip()
+    pw = "".join(random.choices(string.ascii_letters+string.digits, k=14)) + "!"
+    h_fb = {**HEADERS, "content-type": "application/json",
+            "x-firebase-gmpid": "1:378221804375:web:32bf22971597e5ef92dc12",
+            "x-client-version": "Chrome/JsCore/11.10.0/FirebaseCore-web"}
+    requests.post(f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={FB_KEY}",
+        headers=h_fb, json={"returnSecureToken": True, "email": email,
+        "password": pw, "clientType": "CLIENT_TYPE_WEB"}).json()
+    requests.post(f"{API}/email-verification-send",
+        headers={"content-type":"application/json"}, json={"email": email})
+    otp = None
+    for _ in range(30):
+        time.sleep(3)
+        r = requests.get(f"{MAIL}/attendi/{email}",
+            params={"mittente":"davinci","codice":1,"semplice":1,"timeout":10000})
+        m = re.search(r"\\b(\\d{6})\\b", r.text)
+        if m: otp = m.group(1); break
+    requests.post(f"{API}/email-verification-verify-code",
+        headers={"content-type":"application/json"}, json={"email": email, "code": otp})
+    d = requests.post(f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FB_KEY}",
+        headers=h_fb, json={"returnSecureToken": True, "email": email,
+        "password": pw, "clientType": "CLIENT_TYPE_WEB"}).json()
+    return d["idToken"]
+
+# ══ 3. GENERA IMMAGINE ══
+def generate(prompt, model="NANO_BANANA_PRO", dim="16:9",
+             token=None, reference_url=None):
+    if not token: token = signup()
+    uid = json.loads(base64.urlsafe_b64decode(
+        token.split(".")[1] + "=="))["user_id"]
+    ah = {**HEADERS, "content-type": "application/json",
+          "x-platform": "web", "x-token": token}
+    payload = {"prompt": prompt, "model": model, "dimension": dim,
+               "artStyleId": 0, "imageCount": 1}
+    if reference_url:
+        payload["referenceImages"] = [reference_url]
+        payload["referenceImage"] = reference_url
+    r = requests.post(f"{API}/process/txt-image", json=payload, headers=ah).json()
+    pid = r.get("processId") or (r.get("data") or [{}])[0].get("processId")
+    for _ in range(150):
+        time.sleep(2)
+        rr = requests.get(f"{FS}/users/{uid}/processes/{pid}",
+            headers={"authorization": f"Bearer {token}"})
+        if rr.status_code != 200: continue
+        f = rr.json().get("fields", {})
+        s = (f.get("status", {}).get("stringValue") or "").upper()
+        if s in ("COMPLETED","SUCCESS","DONE"):
+            urls = []
+            for k in ("outputs","images","results"):
+                for item in f.get(k, {}).get("arrayValue", {}).get("values", []):
+                    v = item.get("stringValue", "")
+                    if v.startswith("http"): urls.append(v)
+            return urls
+        if s in ("FAILED","ERROR"): raise RuntimeError(f"Failed: {s}")
+    raise TimeoutError()
+
+# ══════ USO ══════
+if __name__ == "__main__":
+    # 1. Upload foto di riferimento
+    ref_url = upload("mia_foto.jpg")
+    print("Riferimento caricato:", ref_url)
+
+    # 2. Genera immagine
+    token = signup()
+    urls = generate(
+        prompt="Portrait of this person on a luxury yacht in Mykonos at sunset",
+        model="NANO_BANANA_PRO", dim="16:9",
+        token=token, reference_url=ref_url,
+    )
+    for u in urls:
+        print("Immagine generata:", u)
 ''', language="python")
 
     st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
     st.markdown("""
     <div style="text-align: center; padding: 20px; color: var(--text-3); font-size: 12px;">
-        Nitro API v1 · powered by 808files storage & Nvidia NIM · docs by @elmarciun
+        Nitro Pipeline · powered by <code>808files</code> · <code>mail808</code> · docs by @elmarciun
     </div>
     """, unsafe_allow_html=True)
