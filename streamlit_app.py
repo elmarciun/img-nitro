@@ -169,7 +169,6 @@ def _mocl(m):
     v = m.get("outputCountLimit")
     return int(v) if v else None
 def _mtime(m):
-    """Tempo stimato in secondi per generazione (dal CMS o fallback)."""
     v = m.get("outputTime") or m.get("estimatedTime") or m.get("avgTime")
     try: return float(v) if v else 15.0
     except: return 15.0
@@ -194,7 +193,6 @@ def resolve_dim(m, ud):
         if c in dims: return c
     return dims[0]
 
-# ═══════════ ACCOUNTS ═══════════
 def load_accs():
     if not ACCS_FILE.exists(): return []
     try: return json.loads(ACCS_FILE.read_text(encoding="utf-8"))
@@ -413,507 +411,603 @@ def run(coro):
 
 
 # ═══════════════════════════════════════════════════════════════════
-#                    STREAMLIT UI - ULTRA MODERN
+#                    UI - ChatGPT-style Minimal
 # ═══════════════════════════════════════════════════════════════════
-st.set_page_config(page_title="IMG-NITRO", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Nitro", layout="wide", initial_sidebar_state="collapsed")
 
-st.markdown("""
+# THEME STATE
+if "theme" not in st.session_state:
+    st.session_state.theme = "dark"
+
+THEME = st.session_state.theme
+
+# Color palette (ChatGPT-inspired)
+if THEME == "dark":
+    C = {
+        "bg":        "#212121",
+        "bg_2":      "#2f2f2f",
+        "bg_3":      "#171717",
+        "surface":   "#2f2f2f",
+        "surface_h": "#3a3a3a",
+        "border":    "#404040",
+        "border_h":  "#565656",
+        "text":      "#ececec",
+        "text_2":    "#b4b4b4",
+        "text_3":    "#8e8e8e",
+        "accent":    "#10a37f",
+        "accent_h":  "#0d8968",
+        "danger":    "#ef4444",
+        "success":   "#10a37f",
+        "input_bg":  "#2f2f2f",
+        "shadow":    "0 2px 12px rgba(0, 0, 0, 0.3)",
+    }
+else:
+    C = {
+        "bg":        "#ffffff",
+        "bg_2":      "#f7f7f8",
+        "bg_3":      "#ececec",
+        "surface":   "#ffffff",
+        "surface_h": "#f7f7f8",
+        "border":    "#e5e5e5",
+        "border_h":  "#d0d0d0",
+        "text":      "#0d0d0d",
+        "text_2":    "#5d5d5d",
+        "text_3":    "#8e8e8e",
+        "accent":    "#10a37f",
+        "accent_h":  "#0d8968",
+        "danger":    "#ef4444",
+        "success":   "#10a37f",
+        "input_bg":  "#ffffff",
+        "shadow":    "0 2px 12px rgba(0, 0, 0, 0.06)",
+    }
+
+st.markdown(f"""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
     
-    :root {
-        --bg-0: #050510;
-        --bg-1: #0a0a1a;
-        --bg-2: #10102a;
-        --accent-1: #6366f1;
-        --accent-2: #a855f7;
-        --accent-3: #ec4899;
-        --accent-4: #06b6d4;
-        --neon-cyan: #22d3ee;
-        --neon-pink: #f472b6;
-        --neon-green: #4ade80;
-        --text-1: #f8fafc;
-        --text-2: #94a3b8;
-        --text-3: #64748b;
-        --border: rgba(99, 102, 241, 0.15);
-        --border-hover: rgba(99, 102, 241, 0.4);
-    }
+    :root {{
+        --bg: {C['bg']};
+        --bg-2: {C['bg_2']};
+        --bg-3: {C['bg_3']};
+        --surface: {C['surface']};
+        --surface-h: {C['surface_h']};
+        --border: {C['border']};
+        --border-h: {C['border_h']};
+        --text: {C['text']};
+        --text-2: {C['text_2']};
+        --text-3: {C['text_3']};
+        --accent: {C['accent']};
+        --accent-h: {C['accent_h']};
+        --danger: {C['danger']};
+        --success: {C['success']};
+        --input-bg: {C['input_bg']};
+        --shadow: {C['shadow']};
+    }}
     
-    html, body, [class*="css"] {
-        font-family: 'Space Grotesk', -apple-system, sans-serif !important;
-    }
+    * {{ box-sizing: border-box; }}
     
-    /* Background animato */
-    .stApp {
-        background: 
-            radial-gradient(ellipse 80% 50% at 20% 10%, rgba(99, 102, 241, 0.15), transparent),
-            radial-gradient(ellipse 60% 40% at 80% 30%, rgba(168, 85, 247, 0.12), transparent),
-            radial-gradient(ellipse 70% 45% at 50% 80%, rgba(236, 72, 153, 0.08), transparent),
-            linear-gradient(180deg, #050510 0%, #0a0a1a 100%);
-        background-attachment: fixed;
-    }
+    html, body, [class*="css"], .stApp {{
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+        background: var(--bg) !important;
+        color: var(--text) !important;
+    }}
     
-    #MainMenu, footer, header { visibility: hidden; }
-    .block-container { padding: 1rem 2rem 3rem; max-width: 1500px; }
+    .stApp {{ background: var(--bg) !important; }}
+    
+    #MainMenu, footer, header {{ visibility: hidden; }}
+    .block-container {{
+        padding: 1.5rem 2rem 3rem !important;
+        max-width: 1200px !important;
+    }}
     
     /* ═══ HEADER ═══ */
-    .nitro-hero {
-        position: relative;
-        background: linear-gradient(135deg, rgba(10, 10, 26, 0.9) 0%, rgba(20, 15, 45, 0.9) 100%);
-        backdrop-filter: blur(24px);
-        border: 1px solid var(--border);
-        border-radius: 20px;
-        padding: 28px 36px;
-        margin-bottom: 20px;
-        overflow: hidden;
-        box-shadow: 
-            0 0 60px rgba(99, 102, 241, 0.15),
-            inset 0 1px 0 rgba(255, 255, 255, 0.05);
-    }
-    .nitro-hero::before {
-        content: '';
-        position: absolute;
-        inset: -50%;
-        background: conic-gradient(from 0deg, transparent, rgba(99, 102, 241, 0.1), transparent, rgba(236, 72, 153, 0.1), transparent);
-        animation: rotate 12s linear infinite;
-        z-index: 0;
-    }
-    @keyframes rotate { to { transform: rotate(360deg); } }
-    
-    .nitro-hero-inner { position: relative; z-index: 1; display: flex; align-items: center; justify-content: space-between; }
-    
-    .nitro-brand {
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 38px;
-        font-weight: 800;
-        letter-spacing: -1.5px;
-        background: linear-gradient(135deg, #f8fafc 0%, #a855f7 50%, #ec4899 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-        margin: 0;
-        line-height: 1;
-    }
-    .nitro-brand .dash { color: var(--accent-2); -webkit-text-fill-color: var(--accent-2); }
-    
-    .nitro-tag {
-        display: block;
-        margin-top: 8px;
-        font-size: 11px;
-        color: var(--text-3);
-        letter-spacing: 3px;
-        text-transform: uppercase;
-        font-weight: 500;
-    }
-    
-    .nitro-status {
+    .nitro-nav {{
         display: flex;
         align-items: center;
-        gap: 8px;
-        padding: 8px 14px;
-        background: rgba(74, 222, 128, 0.1);
-        border: 1px solid rgba(74, 222, 128, 0.3);
-        border-radius: 100px;
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 11px;
-        font-weight: 700;
-        color: var(--neon-green);
-        letter-spacing: 1px;
-    }
-    .pulse-dot {
-        width: 8px; height: 8px; border-radius: 50%;
-        background: var(--neon-green);
-        box-shadow: 0 0 12px var(--neon-green);
-        animation: pulse-glow 1.6s ease-in-out infinite;
-    }
-    @keyframes pulse-glow {
-        0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 12px var(--neon-green); }
-        50% { opacity: 0.6; transform: scale(1.2); box-shadow: 0 0 24px var(--neon-green); }
-    }
-    
-    /* ═══ TABS ═══ */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 4px;
-        background: rgba(10, 10, 26, 0.6);
-        backdrop-filter: blur(12px);
-        padding: 6px;
-        border-radius: 14px;
-        border: 1px solid var(--border);
-    }
-    .stTabs [data-baseweb="tab"] {
-        background: transparent;
-        color: var(--text-3);
-        border-radius: 10px;
-        padding: 12px 26px;
-        font-weight: 600;
-        font-size: 12px;
-        letter-spacing: 1.5px;
-        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        font-family: 'JetBrains Mono', monospace;
-    }
-    .stTabs [data-baseweb="tab"]:hover { color: var(--text-1); }
-    .stTabs [aria-selected="true"] {
-        background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(168, 85, 247, 0.2)) !important;
-        color: var(--text-1) !important;
-        box-shadow: 0 0 20px rgba(99, 102, 241, 0.3);
-    }
-    
-    /* ═══ SECTION TITLE ═══ */
-    .sec-t {
-        color: var(--text-2);
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 10px;
-        text-transform: uppercase;
-        letter-spacing: 3px;
-        font-weight: 700;
-        margin: 20px 0 12px 0;
-        padding-bottom: 10px;
+        justify-content: space-between;
+        padding: 12px 20px;
+        background: var(--bg);
         border-bottom: 1px solid var(--border);
+        margin: -1.5rem -2rem 1.5rem -2rem;
+    }}
+    .nitro-logo {{
         display: flex;
         align-items: center;
         gap: 10px;
-    }
-    .sec-t::before {
-        content: '';
-        width: 3px; height: 12px;
-        background: linear-gradient(180deg, var(--accent-1), var(--accent-3));
-        border-radius: 2px;
-    }
+        font-size: 17px;
+        font-weight: 600;
+        color: var(--text);
+        letter-spacing: -0.3px;
+    }}
+    .nitro-logo-dot {{
+        width: 24px; height: 24px;
+        background: linear-gradient(135deg, var(--accent), #0d8968);
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-weight: 700;
+        font-size: 13px;
+        font-family: 'JetBrains Mono', monospace;
+    }}
+    .nitro-badge {{
+        background: var(--bg-2);
+        color: var(--text-3);
+        padding: 2px 8px;
+        border-radius: 6px;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+        margin-left: 4px;
+        border: 1px solid var(--border);
+    }}
+    .nitro-nav-right {{
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }}
     
-    /* ═══ INPUTS ═══ */
-    .stTextArea textarea, .stTextInput input {
-        background: rgba(5, 5, 16, 0.6) !important;
-        backdrop-filter: blur(8px) !important;
+    /* Theme toggle button (Streamlit button styled) */
+    div[data-testid="stButton"]:has(button[kind="secondary"]) button {{
+        background: var(--surface) !important;
+        color: var(--text-2) !important;
         border: 1px solid var(--border) !important;
-        color: var(--text-1) !important;
-        font-family: 'JetBrains Mono', monospace !important;
-        font-size: 13px !important;
-        border-radius: 12px !important;
-        transition: all 0.3s !important;
-    }
-    .stTextArea textarea:focus, .stTextInput input:focus {
-        border-color: var(--accent-1) !important;
-        box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.15), 0 0 40px rgba(99, 102, 241, 0.1) !important;
+        padding: 8px 12px !important;
+        font-size: 12px !important;
+        font-weight: 500 !important;
+        letter-spacing: 0 !important;
+        text-transform: none !important;
+        border-radius: 100px !important;
+        box-shadow: none !important;
+        min-height: 36px !important;
+    }}
+    div[data-testid="stButton"]:has(button[kind="secondary"]) button:hover {{
+        background: var(--surface-h) !important;
+        border-color: var(--border-h) !important;
+        transform: none !important;
+    }}
+    
+    /* ═══ TABS ═══ */
+    .stTabs [data-baseweb="tab-list"] {{
+        gap: 4px;
+        background: var(--bg-2);
+        padding: 4px;
+        border-radius: 100px;
+        border: 1px solid var(--border);
+        width: fit-content;
+        margin: 0 auto 24px auto;
+    }}
+    .stTabs [data-baseweb="tab"] {{
+        background: transparent;
+        color: var(--text-2);
+        border-radius: 100px;
+        padding: 8px 20px;
+        font-weight: 500;
+        font-size: 13px;
+        letter-spacing: 0;
+        text-transform: none;
+        font-family: 'Inter', sans-serif !important;
+        transition: all 0.15s ease;
+        border: none;
+    }}
+    .stTabs [data-baseweb="tab"]:hover {{
+        color: var(--text);
+        background: var(--surface-h);
+    }}
+    .stTabs [aria-selected="true"] {{
+        background: var(--surface) !important;
+        color: var(--text) !important;
+        box-shadow: var(--shadow);
+    }}
+    .stTabs [data-baseweb="tab-panel"] {{ padding-top: 8px; }}
+    .stTabs [data-baseweb="tab-highlight"] {{ display: none !important; }}
+    .stTabs [data-baseweb="tab-border"] {{ display: none !important; }}
+    
+    /* ═══ SECTION LABEL ═══ */
+    .sec-label {{
+        color: var(--text-2);
+        font-size: 13px;
+        font-weight: 500;
+        margin: 16px 0 8px 0;
+        letter-spacing: 0;
+    }}
+    
+    /* ═══ INPUTS (ChatGPT-style rounded) ═══ */
+    .stTextArea textarea {{
+        background: var(--input-bg) !important;
+        border: 1px solid var(--border) !important;
+        color: var(--text) !important;
+        font-family: 'Inter', sans-serif !important;
+        font-size: 15px !important;
+        border-radius: 24px !important;
+        padding: 16px 20px !important;
+        transition: all 0.15s !important;
+        resize: none !important;
+        box-shadow: var(--shadow);
+    }}
+    .stTextArea textarea:focus {{
+        border-color: var(--text-3) !important;
+        box-shadow: 0 0 0 2px rgba(16, 163, 127, 0.1), var(--shadow) !important;
         outline: none !important;
-    }
-    .stSelectbox > div > div, .stNumberInput > div > div {
-        background: rgba(5, 5, 16, 0.6) !important;
-        border: 1px solid var(--border) !important;
-        border-radius: 12px !important;
-        color: var(--text-1) !important;
-    }
-    .stNumberInput input { color: var(--text-1) !important; }
+    }}
+    .stTextArea textarea::placeholder {{ color: var(--text-3) !important; }}
     
-    /* ═══ BUTTONS ═══ */
-    .stButton > button {
-        background: linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #ec4899 100%);
-        background-size: 200% 200%;
+    .stTextInput input {{
+        background: var(--input-bg) !important;
+        border: 1px solid var(--border) !important;
+        color: var(--text) !important;
+        font-family: 'Inter', sans-serif !important;
+        font-size: 14px !important;
+        border-radius: 100px !important;
+        padding: 10px 18px !important;
+        height: 44px !important;
+    }}
+    .stTextInput input:focus {{
+        border-color: var(--accent) !important;
+        box-shadow: 0 0 0 3px rgba(16, 163, 127, 0.12) !important;
+        outline: none !important;
+    }}
+    
+    /* Selectbox */
+    .stSelectbox > div > div {{
+        background: var(--input-bg) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 14px !important;
+        color: var(--text) !important;
+        min-height: 44px !important;
+    }}
+    .stSelectbox > div > div:hover {{ border-color: var(--border-h) !important; }}
+    .stSelectbox [data-baseweb="select"] > div {{
+        background: transparent !important;
+        color: var(--text) !important;
+        font-family: 'Inter', sans-serif !important;
+    }}
+    
+    /* Selectbox dropdown menu */
+    [data-baseweb="popover"] > div {{
+        background: var(--surface) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 14px !important;
+        box-shadow: var(--shadow) !important;
+        overflow: hidden !important;
+    }}
+    [data-baseweb="menu"] {{
+        background: var(--surface) !important;
+    }}
+    [data-baseweb="menu"] li {{
+        color: var(--text) !important;
+        font-family: 'Inter', sans-serif !important;
+        font-size: 13px !important;
+        padding: 10px 14px !important;
+    }}
+    [data-baseweb="menu"] li:hover {{ background: var(--surface-h) !important; }}
+    
+    /* Number input */
+    .stNumberInput > div > div {{
+        background: var(--input-bg) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 14px !important;
+        min-height: 44px !important;
+    }}
+    .stNumberInput input {{
+        background: transparent !important;
+        color: var(--text) !important;
+        font-family: 'Inter', sans-serif !important;
+    }}
+    .stNumberInput button {{
+        background: transparent !important;
+        color: var(--text-2) !important;
+        border: none !important;
+    }}
+    .stNumberInput button:hover {{
+        background: var(--surface-h) !important;
+        color: var(--text) !important;
+    }}
+    
+    /* Label text */
+    .stTextArea label, .stTextInput label, .stSelectbox label, .stNumberInput label {{
+        color: var(--text-2) !important;
+        font-size: 13px !important;
+        font-weight: 500 !important;
+        font-family: 'Inter', sans-serif !important;
+    }}
+    
+    /* Checkbox */
+    .stCheckbox label {{ color: var(--text-2) !important; font-size: 13px !important; }}
+    .stCheckbox [data-baseweb="checkbox"] {{ border-radius: 6px !important; }}
+    
+    /* ═══ PRIMARY BUTTON ═══ */
+    div[data-testid="stButton"] > button {{
+        background: var(--accent);
         color: white;
         border: none;
-        font-weight: 700;
-        letter-spacing: 2px;
-        padding: 14px 32px;
-        border-radius: 12px;
-        font-size: 12px;
-        text-transform: uppercase;
-        font-family: 'JetBrains Mono', monospace;
-        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        position: relative;
-        overflow: hidden;
-        box-shadow: 
-            0 4px 20px rgba(99, 102, 241, 0.3),
-            inset 0 1px 0 rgba(255, 255, 255, 0.2);
-        animation: gradient-shift 6s ease infinite;
-    }
-    @keyframes gradient-shift {
-        0%, 100% { background-position: 0% 50%; }
-        50% { background-position: 100% 50%; }
-    }
-    .stButton > button:hover {
-        transform: translateY(-3px) scale(1.01);
-        box-shadow: 
-            0 12px 40px rgba(99, 102, 241, 0.5),
-            0 0 60px rgba(168, 85, 247, 0.3),
-            inset 0 1px 0 rgba(255, 255, 255, 0.3);
-    }
-    .stButton > button:active { transform: translateY(-1px) scale(0.99); }
-    .stButton > button:disabled {
-        background: rgba(30, 41, 59, 0.5);
-        color: var(--text-3);
-        transform: none;
+        font-weight: 500;
+        font-size: 14px;
+        letter-spacing: 0;
+        padding: 12px 24px;
+        border-radius: 100px;
+        text-transform: none;
+        font-family: 'Inter', sans-serif;
+        transition: all 0.15s;
         box-shadow: none;
-        animation: none;
-    }
+        min-height: 44px;
+    }}
+    div[data-testid="stButton"] > button:hover {{
+        background: var(--accent-h);
+        transform: none;
+        box-shadow: 0 2px 8px rgba(16, 163, 127, 0.25);
+    }}
+    div[data-testid="stButton"] > button:disabled {{
+        background: var(--bg-3);
+        color: var(--text-3);
+    }}
     
-    /* ═══ ANIMATED PROGRESS BAR ═══ */
-    .nitro-progress-wrapper {
-        margin: 20px 0;
-        padding: 24px;
-        background: linear-gradient(135deg, rgba(10, 10, 26, 0.9), rgba(20, 15, 45, 0.9));
-        backdrop-filter: blur(20px);
+    /* Download button */
+    .stDownloadButton > button {{
+        background: var(--surface) !important;
+        color: var(--text) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 100px !important;
+        font-weight: 500 !important;
+        font-size: 13px !important;
+        padding: 8px 16px !important;
+    }}
+    .stDownloadButton > button:hover {{
+        background: var(--surface-h) !important;
+        border-color: var(--border-h) !important;
+    }}
+    
+    /* ═══ PROGRESS BAR ═══ */
+    .np-wrap {{
+        margin: 16px 0;
+        padding: 20px 24px;
+        background: var(--surface);
         border: 1px solid var(--border);
-        border-radius: 16px;
-        box-shadow: 0 0 40px rgba(99, 102, 241, 0.15);
-    }
-    .nitro-progress-header {
+        border-radius: 20px;
+        box-shadow: var(--shadow);
+    }}
+    .np-head {{
         display: flex;
         justify-content: space-between;
         align-items: center;
         margin-bottom: 14px;
-        font-family: 'JetBrains Mono', monospace;
-    }
-    .nitro-progress-label {
-        font-size: 12px;
-        color: var(--text-1);
-        font-weight: 600;
-        letter-spacing: 1px;
+    }}
+    .np-label {{
         display: flex;
         align-items: center;
         gap: 10px;
-    }
-    .nitro-spinner {
+        color: var(--text);
+        font-size: 14px;
+        font-weight: 500;
+    }}
+    .np-spin {{
         width: 14px; height: 14px;
-        border: 2px solid rgba(99, 102, 241, 0.2);
-        border-top-color: var(--accent-2);
-        border-right-color: var(--accent-3);
+        border: 2px solid var(--border);
+        border-top-color: var(--accent);
         border-radius: 50%;
         animation: spin 0.8s linear infinite;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    
-    .nitro-progress-percent {
-        font-size: 24px;
-        font-weight: 800;
-        background: linear-gradient(135deg, var(--accent-1), var(--accent-3));
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
+    }}
+    @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+    .np-pct {{
+        font-size: 15px;
+        font-weight: 600;
+        color: var(--text);
         font-family: 'JetBrains Mono', monospace;
-        letter-spacing: -1px;
-        min-width: 100px;
-        text-align: right;
-    }
-    
-    .nitro-progress-track {
+        letter-spacing: -0.3px;
+    }}
+    .np-track {{
         position: relative;
-        height: 12px;
-        background: rgba(5, 5, 16, 0.8);
+        height: 6px;
+        background: var(--bg-3);
         border-radius: 100px;
         overflow: hidden;
-        border: 1px solid var(--border);
-        box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.4);
-    }
-    .nitro-progress-fill {
+    }}
+    .np-fill {{
         position: absolute;
         top: 0; left: 0; bottom: 0;
-        background: linear-gradient(90deg, #6366f1, #a855f7, #ec4899, #06b6d4, #6366f1);
-        background-size: 300% 100%;
+        background: linear-gradient(90deg, var(--accent) 0%, #14c19a 50%, var(--accent) 100%);
+        background-size: 200% 100%;
         border-radius: 100px;
-        transition: width 0.15s cubic-bezier(0.4, 0, 0.2, 1);
-        animation: gradient-flow 3s linear infinite;
-        box-shadow: 
-            0 0 20px rgba(168, 85, 247, 0.6),
-            0 0 40px rgba(99, 102, 241, 0.3);
-    }
-    @keyframes gradient-flow {
-        0% { background-position: 0% 50%; }
-        100% { background-position: 300% 50%; }
-    }
-    .nitro-progress-fill::after {
-        content: '';
-        position: absolute;
-        inset: 0;
-        background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.4) 50%, transparent 100%);
-        animation: shimmer 1.5s linear infinite;
-    }
-    @keyframes shimmer {
-        0% { transform: translateX(-100%); }
-        100% { transform: translateX(100%); }
-    }
-    
-    .nitro-progress-meta {
+        transition: width 0.1s cubic-bezier(0.4, 0, 0.2, 1);
+        animation: shim 2s linear infinite;
+    }}
+    @keyframes shim {{
+        0% {{ background-position: 200% 0; }}
+        100% {{ background-position: -200% 0; }}
+    }}
+    .np-meta {{
         display: flex;
         justify-content: space-between;
         margin-top: 12px;
         font-family: 'JetBrains Mono', monospace;
         font-size: 11px;
         color: var(--text-3);
-        letter-spacing: 0.5px;
-    }
-    .nitro-progress-phase {
-        color: var(--accent-2);
+    }}
+    .np-phase {{
+        color: var(--accent);
         font-weight: 600;
         text-transform: uppercase;
-    }
+        letter-spacing: 0.5px;
+    }}
     
-    /* ═══ SHIMMER PLACEHOLDER ═══ */
-    .nitro-shimmer {
+    /* Success state */
+    .np-wrap.done {{
+        border-color: var(--accent);
+        background: {'rgba(16, 163, 127, 0.06)' if THEME == 'dark' else 'rgba(16, 163, 127, 0.04)'};
+    }}
+    .np-wrap.done .np-label {{ color: var(--accent); }}
+    .np-wrap.done .np-pct {{ color: var(--accent); }}
+    
+    /* ═══ PLACEHOLDER ═══ */
+    .np-placeholder {{
         width: 100%;
         aspect-ratio: 1;
-        background: linear-gradient(90deg,
-            rgba(10, 10, 26, 0.6) 0%,
-            rgba(99, 102, 241, 0.15) 40%,
-            rgba(168, 85, 247, 0.15) 50%,
-            rgba(236, 72, 153, 0.15) 60%,
-            rgba(10, 10, 26, 0.6) 100%);
-        background-size: 300% 100%;
-        animation: shimmer-bg 2s linear infinite;
-        border-radius: 16px;
-        border: 1px solid var(--border);
+        max-height: 500px;
+        background: var(--bg-2);
+        border: 1px dashed var(--border);
+        border-radius: 20px;
         display: flex;
         align-items: center;
         justify-content: center;
         color: var(--text-3);
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 12px;
-        letter-spacing: 2px;
-    }
-    @keyframes shimmer-bg {
-        0% { background-position: 100% 0; }
-        100% { background-position: -100% 0; }
-    }
+        font-size: 13px;
+        font-weight: 500;
+    }}
     
-    /* ═══ MODEL CARDS ═══ */
-    .mcard {
+    /* ═══ MODEL CARD ═══ */
+    .mcard {{
         display: grid;
         grid-template-columns: 1fr auto;
         gap: 16px;
         align-items: center;
         padding: 16px 20px;
-        background: linear-gradient(135deg, rgba(10, 10, 26, 0.6), rgba(20, 15, 45, 0.6));
-        backdrop-filter: blur(12px);
+        background: var(--surface);
         border: 1px solid var(--border);
-        border-radius: 14px;
-        margin-bottom: 10px;
-        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-    .mcard:hover {
-        border-color: var(--border-hover);
-        transform: translateX(6px);
-        box-shadow: 0 8px 32px rgba(99, 102, 241, 0.2), -8px 0 20px rgba(168, 85, 247, 0.15);
-    }
-    .mkey {
-        color: var(--accent-2);
-        font-weight: 700;
-        font-size: 15px;
+        border-radius: 16px;
+        margin-bottom: 8px;
+        transition: all 0.15s;
+    }}
+    .mcard:hover {{
+        border-color: var(--border-h);
+        background: var(--surface-h);
+    }}
+    .mkey {{
+        color: var(--text);
+        font-weight: 600;
+        font-size: 14px;
         font-family: 'JetBrains Mono', monospace;
-        letter-spacing: -0.3px;
-    }
-    .mname { color: var(--text-2); font-size: 13px; margin-top: 4px; font-weight: 500; }
-    .minfo {
+    }}
+    .mname {{
+        color: var(--text-2);
+        font-size: 13px;
+        margin-top: 4px;
+    }}
+    .minfo {{
         color: var(--text-3);
         font-size: 11px;
-        margin-top: 6px;
+        margin-top: 4px;
         font-family: 'JetBrains Mono', monospace;
-    }
-    .cheap { background: linear-gradient(135deg, rgba(74, 222, 128, 0.15), rgba(74, 222, 128, 0.05)); color: var(--neon-green); border: 1px solid rgba(74, 222, 128, 0.3); }
-    .mid   { background: linear-gradient(135deg, rgba(251, 191, 36, 0.15), rgba(251, 191, 36, 0.05)); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.3); }
-    .high  { background: linear-gradient(135deg, rgba(244, 114, 182, 0.15), rgba(244, 114, 182, 0.05)); color: var(--neon-pink); border: 1px solid rgba(244, 114, 182, 0.3); }
-    .cost-badge {
-        padding: 10px 16px;
-        border-radius: 10px;
-        font-weight: 700;
-        font-size: 15px;
+    }}
+    .cost {{
+        padding: 6px 14px;
+        border-radius: 100px;
+        font-weight: 600;
+        font-size: 13px;
         font-family: 'JetBrains Mono', monospace;
-        min-width: 80px;
-        text-align: center;
-    }
-    .tag {
+    }}
+    .cost.a {{ background: {'rgba(16, 163, 127, 0.15)' if THEME == 'dark' else 'rgba(16, 163, 127, 0.1)'}; color: var(--accent); }}
+    .cost.b {{ background: {'rgba(234, 179, 8, 0.15)' if THEME == 'dark' else 'rgba(234, 179, 8, 0.1)'}; color: #eab308; }}
+    .cost.c {{ background: {'rgba(239, 68, 68, 0.15)' if THEME == 'dark' else 'rgba(239, 68, 68, 0.1)'}; color: var(--danger); }}
+    .tag {{
         display: inline-block;
-        background: rgba(99, 102, 241, 0.15);
-        color: var(--accent-1);
-        padding: 3px 8px;
+        background: var(--bg-2);
+        color: var(--text-3);
+        padding: 2px 7px;
         border-radius: 5px;
         font-size: 9px;
-        font-weight: 700;
-        margin-left: 6px;
-        letter-spacing: 1px;
-        border: 1px solid rgba(99, 102, 241, 0.2);
-    }
+        font-weight: 600;
+        margin-left: 4px;
+        letter-spacing: 0.5px;
+        border: 1px solid var(--border);
+    }}
     
     /* ═══ METRICS ═══ */
-    [data-testid="stMetricValue"] {
-        font-family: 'JetBrains Mono', monospace !important;
-        background: linear-gradient(135deg, var(--accent-1), var(--accent-3));
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-size: 24px !important;
-        font-weight: 800 !important;
-    }
-    [data-testid="stMetricLabel"] {
-        color: var(--text-3) !important;
-        text-transform: uppercase !important;
-        font-size: 10px !important;
-        letter-spacing: 2px !important;
-        font-family: 'JetBrains Mono', monospace !important;
-    }
-    [data-testid="stMetric"] {
-        background: linear-gradient(135deg, rgba(10, 10, 26, 0.6), rgba(20, 15, 45, 0.4));
-        backdrop-filter: blur(8px);
+    [data-testid="stMetric"] {{
+        background: var(--surface);
         border: 1px solid var(--border);
-        border-radius: 12px;
+        border-radius: 14px;
         padding: 14px 18px;
-    }
+    }}
+    [data-testid="stMetricValue"] {{
+        color: var(--text) !important;
+        font-size: 20px !important;
+        font-weight: 600 !important;
+        font-family: 'JetBrains Mono', monospace !important;
+    }}
+    [data-testid="stMetricLabel"] {{
+        color: var(--text-3) !important;
+        font-size: 11px !important;
+        font-weight: 500 !important;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }}
     
-    /* ═══ IMAGE OUTPUT ═══ */
-    .stImage img {
+    /* ═══ IMAGE ═══ */
+    .stImage img {{
         border-radius: 16px;
-        box-shadow: 
-            0 12px 40px rgba(99, 102, 241, 0.2),
-            0 0 60px rgba(168, 85, 247, 0.1);
-        transition: all 0.4s;
-    }
-    .stImage img:hover {
-        transform: scale(1.01);
-        box-shadow: 
-            0 20px 60px rgba(99, 102, 241, 0.35),
-            0 0 80px rgba(168, 85, 247, 0.2);
-    }
+        box-shadow: var(--shadow);
+    }}
     
     /* ═══ ALERTS ═══ */
-    .stAlert {
-        background: rgba(10, 10, 26, 0.8) !important;
-        backdrop-filter: blur(12px) !important;
+    .stAlert {{
+        background: var(--surface) !important;
         border: 1px solid var(--border) !important;
-        border-radius: 12px !important;
-    }
-    
-    /* ═══ CHECKBOX ═══ */
-    .stCheckbox { color: var(--text-2) !important; }
-    
-    /* Scrollbar */
-    ::-webkit-scrollbar { width: 10px; height: 10px; }
-    ::-webkit-scrollbar-track { background: rgba(5, 5, 16, 0.5); }
-    ::-webkit-scrollbar-thumb { 
-        background: linear-gradient(180deg, var(--accent-1), var(--accent-2));
-        border-radius: 10px;
-    }
-    ::-webkit-scrollbar-thumb:hover { background: var(--accent-3); }
+        border-radius: 14px !important;
+        color: var(--text) !important;
+    }}
+    .stAlert p {{ color: var(--text) !important; }}
     
     /* Caption */
-    [data-testid="stCaptionContainer"] {
+    [data-testid="stCaptionContainer"] {{
         color: var(--text-3) !important;
-        font-family: 'JetBrains Mono', monospace !important;
-        font-size: 11px !important;
-        letter-spacing: 0.5px !important;
-    }
+        font-size: 12px !important;
+    }}
+    
+    /* Warning color */
+    [data-baseweb="notification"] {{
+        background: var(--surface) !important;
+        border-radius: 14px !important;
+    }}
+    
+    /* Scrollbar */
+    ::-webkit-scrollbar {{ width: 10px; height: 10px; }}
+    ::-webkit-scrollbar-track {{ background: transparent; }}
+    ::-webkit-scrollbar-thumb {{ 
+        background: var(--border);
+        border-radius: 100px;
+        border: 2px solid var(--bg);
+    }}
+    ::-webkit-scrollbar-thumb:hover {{ background: var(--border-h); }}
+    
+    /* Success message */
+    .stSuccess {{
+        background: {'rgba(16, 163, 127, 0.1)' if THEME == 'dark' else 'rgba(16, 163, 127, 0.05)'} !important;
+        border-color: var(--accent) !important;
+        color: var(--accent) !important;
+    }}
+    
+    /* Error message */
+    .stError {{
+        background: {'rgba(239, 68, 68, 0.1)' if THEME == 'dark' else 'rgba(239, 68, 68, 0.05)'} !important;
+        border-color: var(--danger) !important;
+    }}
+    
+    /* Progress (native) */
+    .stProgress > div > div > div > div {{
+        background: var(--accent) !important;
+    }}
 </style>
 """, unsafe_allow_html=True)
 
-# HEADER
-st.markdown("""
-<div class="nitro-hero">
-    <div class="nitro-hero-inner">
-        <div>
-            <div class="nitro-brand">IMG<span class="dash">·</span>NITRO</div>
-            <div class="nitro-tag">Automated Neural Image Generation · v2.0</div>
-        </div>
-        <div class="nitro-status">
-            <div class="pulse-dot"></div>
-            <span>PIPELINE READY</span>
+# ═══════════ NAVBAR ═══════════
+nav_l, nav_r = st.columns([6, 1])
+with nav_l:
+    st.markdown(f"""
+    <div class="nitro-nav">
+        <div class="nitro-logo">
+            <div class="nitro-logo-dot">N</div>
+            <span>Nitro</span>
+            <span class="nitro-badge">v2</span>
         </div>
     </div>
-</div>
-""", unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
+with nav_r:
+    st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
+    theme_label = "☾  Dark" if THEME == "light" else "☀  Light"
+    if st.button(theme_label, key="theme_btn", type="secondary", use_container_width=True):
+        st.session_state.theme = "dark" if THEME == "light" else "light"
+        st.rerun()
 
 # STATE
 if "models" not in st.session_state:
@@ -924,66 +1018,80 @@ if "models" not in st.session_state:
 if "images" not in st.session_state: st.session_state.images = []
 if "last_result" not in st.session_state: st.session_state.last_result = None
 
-# PHASE LABELS
 PHASE_LABELS = {
-    "init": "Initializing pipeline",
-    "account": "Provisioning account",
-    "signup": "Creating new account",
-    "submit": "Submitting to render engine",
-    "render": "Rendering neural image",
-    "download": "Downloading assets",
+    "init": "Initializing",
+    "account": "Preparing account",
+    "signup": "Setting up new session",
+    "submit": "Submitting request",
+    "render": "Generating image",
 }
 
 def render_progress(percent, phase, elapsed, eta, extra=""):
-    """Render ultra-modern progress bar HTML."""
     percent = max(0, min(99.99, percent))
-    label = PHASE_LABELS.get(phase, phase.upper())
-    if extra: label += f" · {extra}"
+    label = PHASE_LABELS.get(phase, phase.title())
+    if extra: label += f"  ·  {extra}"
     return f"""
-    <div class="nitro-progress-wrapper">
-        <div class="nitro-progress-header">
-            <div class="nitro-progress-label">
-                <div class="nitro-spinner"></div>
+    <div class="np-wrap">
+        <div class="np-head">
+            <div class="np-label">
+                <div class="np-spin"></div>
                 <span>{label}</span>
             </div>
-            <div class="nitro-progress-percent">{percent:.2f}%</div>
+            <div class="np-pct">{percent:.2f}%</div>
         </div>
-        <div class="nitro-progress-track">
-            <div class="nitro-progress-fill" style="width: {percent:.4f}%;"></div>
+        <div class="np-track">
+            <div class="np-fill" style="width: {percent:.4f}%;"></div>
         </div>
-        <div class="nitro-progress-meta">
-            <span>ELAPSED · <span style="color: var(--text-1);">{elapsed:.2f}s</span></span>
-            <span class="nitro-progress-phase">{phase.upper()}</span>
-            <span>ETA · <span style="color: var(--text-1);">{eta:.2f}s</span></span>
+        <div class="np-meta">
+            <span>{elapsed:.2f}s elapsed</span>
+            <span class="np-phase">{phase}</span>
+            <span>~{eta:.1f}s remaining</span>
         </div>
     </div>
     """
 
-def shimmer_placeholder():
-    return '<div class="nitro-shimmer">AWAITING GENERATION</div>'
+def render_done(elapsed, count):
+    return f"""
+    <div class="np-wrap done">
+        <div class="np-head">
+            <div class="np-label">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                <span>Complete</span>
+            </div>
+            <div class="np-pct">100.00%</div>
+        </div>
+        <div class="np-track">
+            <div class="np-fill" style="width: 100%;"></div>
+        </div>
+        <div class="np-meta">
+            <span>{elapsed:.2f}s total</span>
+            <span class="np-phase">success</span>
+            <span>{count} {"image" if count == 1 else "images"}</span>
+        </div>
+    </div>
+    """
 
-# TABS
-tab_gen, tab_bulk, tab_models = st.tabs(["  GENERATE  ", "  BULK  ", "  MODELS  "])
+def placeholder():
+    return '<div class="np-placeholder">Your generated image will appear here</div>'
 
-# ═══════════ TAB GENERATE ═══════════
+# ═══════════ TABS ═══════════
+tab_gen, tab_bulk, tab_models = st.tabs(["Generate", "Bulk", "Models"])
+
+# ═══════════ GENERATE ═══════════
 with tab_gen:
-    col_l, col_r = st.columns([1, 1.6], gap="large")
+    col_l, col_r = st.columns([1, 1.4], gap="large")
     
     with col_l:
-        st.markdown('<div class="sec-t">PROMPT</div>', unsafe_allow_html=True)
-        prompt = st.text_area("p", height=140, label_visibility="collapsed",
-                              placeholder="Describe your vision in vivid detail...")
+        st.markdown('<div class="sec-label">Prompt</div>', unsafe_allow_html=True)
+        prompt = st.text_area("p", height=130, label_visibility="collapsed",
+                              placeholder="Describe the image you want to create...")
         
-        st.markdown('<div class="sec-t">MODEL</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sec-label">Model</div>', unsafe_allow_html=True)
         models = st.session_state.models or []
         m_sel = None
         if models:
             sorted_m = sorted(models, key=lambda x: (_mc(x), _mk(x)))
-            labels = []
-            for m in sorted_m:
-                c = _mc(m)
-                icon = "◉" if c <= 10 else "◐" if c <= 15 else "○"
-                labels.append(f"{icon}  {_mk(m):<28} — {c:>3}cr")
+            labels = [f"{_mk(m)} — {_mc(m)}cr" for m in sorted_m]
             sel = st.selectbox("m", range(len(labels)),
                                format_func=lambda i: labels[i], label_visibility="collapsed")
             m_sel = sorted_m[sel]
@@ -1001,21 +1109,20 @@ with tab_gen:
         
         ref_urls = None
         if m_sel and m_sel.get("referenceImage"):
-            st.markdown('<div class="sec-t">REFERENCE IMAGE</div>', unsafe_allow_html=True)
+            st.markdown('<div class="sec-label">Reference image URL</div>', unsafe_allow_html=True)
             ref = st.text_input("r", placeholder="https://...", label_visibility="collapsed")
             if ref.strip(): ref_urls = [ref.strip()]
         
-        st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
-        gen_btn = st.button("▶  GENERATE", use_container_width=True,
-                            disabled=not m_sel or not prompt.strip())
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+        gen_btn = st.button("Generate", use_container_width=True,
+                            disabled=not m_sel or not prompt.strip(), key="gen_btn")
     
     with col_r:
-        st.markdown('<div class="sec-t">OUTPUT</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sec-label">Output</div>', unsafe_allow_html=True)
         output_slot = st.empty()
         metrics_slot = st.empty()
         progress_slot = st.empty()
         
-        # Show existing images or shimmer
         if st.session_state.images and not gen_btn:
             r = st.session_state.last_result
             if r:
@@ -1031,116 +1138,69 @@ with tab_gen:
                     with cols[i % len(cols)]:
                         st.image(img, use_container_width=True)
         elif not gen_btn:
-            output_slot.markdown(shimmer_placeholder(), unsafe_allow_html=True)
+            output_slot.markdown(placeholder(), unsafe_allow_html=True)
     
-    # ═══════════ GENERATION WITH LIVE PROGRESS ═══════════
     if gen_btn:
         st.session_state.images = []
-        output_slot.markdown(shimmer_placeholder(), unsafe_allow_html=True)
+        output_slot.markdown(placeholder(), unsafe_allow_html=True)
         metrics_slot.empty()
         
-        # Shared state between async task and UI thread
         progress_state = {
-            "phase": "init",
-            "status": "",
-            "pid": "",
-            "est_time": _mtime(m_sel) + 15,  # +15s buffer for signup/setup
+            "phase": "init", "status": "", "pid": "",
+            "est_time": _mtime(m_sel) + 15,
         }
-        
-        # Container for background thread result
         result_holder = {"result": None, "error": None, "done": False}
         
         def gen_worker():
             try:
                 res = run(do_generate(
-                    prompt=prompt,
-                    model_key=_mk(m_sel),
-                    dimension=dim_sel,
-                    count=int(count),
-                    reference_urls=ref_urls,
-                    progress_state=progress_state,
-                ))
+                    prompt=prompt, model_key=_mk(m_sel),
+                    dimension=dim_sel, count=int(count),
+                    reference_urls=ref_urls, progress_state=progress_state))
                 result_holder["result"] = res
             except Exception as e:
                 result_holder["error"] = e
             finally:
                 result_holder["done"] = True
         
-        # Start background thread
         t = threading.Thread(target=gen_worker, daemon=True)
         t.start()
         
-        # ═══ LIVE PROGRESS LOOP ═══
         start = time.perf_counter()
         est = progress_state["est_time"]
-        last_render = 0
         
         while not result_holder["done"]:
             elapsed = time.perf_counter() - start
-            
-            # Non-linear progress: fast start, slow near end
-            # Uses exponential decay to approach but never reach 100%
-            raw_ratio = elapsed / max(est, 1)
-            # Sigmoid-like: 1 - exp(-x) but capped
-            progress = (1 - pow(2.718281828, -raw_ratio * 1.8)) * 99.5
+            raw = elapsed / max(est, 1)
+            progress = (1 - pow(2.718281828, -raw * 1.8)) * 99.5
             progress = min(progress, 98.5)
-            
             phase = progress_state.get("phase", "init")
             status = progress_state.get("status", "")
             pid = progress_state.get("pid", "")
-            
             eta = max(0, est - elapsed)
             extra = pid if pid else status
-            
             progress_slot.markdown(
                 render_progress(progress, phase, elapsed, eta, extra),
-                unsafe_allow_html=True,
-            )
-            
-            time.sleep(0.05)  # 20 FPS
-            
-            # Safety: after 5 min bail out (though thread will keep polling)
-            if elapsed > 400:
-                break
+                unsafe_allow_html=True)
+            time.sleep(0.05)
+            if elapsed > 400: break
         
         t.join(timeout=1)
-        
         elapsed_final = time.perf_counter() - start
         
         if result_holder["error"]:
             err = result_holder["error"]
-            progress_slot.error(f"**{type(err).__name__}**\n\n{str(err)[:400]}")
-            output_slot.markdown(shimmer_placeholder(), unsafe_allow_html=True)
+            progress_slot.error(f"**{type(err).__name__}** — {str(err)[:300]}")
+            output_slot.markdown(placeholder(), unsafe_allow_html=True)
         else:
             result = result_holder["result"]
+            progress_slot.markdown(render_done(elapsed_final, len(result.urls)), unsafe_allow_html=True)
             
-            # Final 100% render
-            progress_slot.markdown(f"""
-            <div class="nitro-progress-wrapper" style="border-color: rgba(74, 222, 128, 0.4); box-shadow: 0 0 40px rgba(74, 222, 128, 0.2);">
-                <div class="nitro-progress-header">
-                    <div class="nitro-progress-label" style="color: var(--neon-green);">
-                        ✓ RENDER COMPLETE
-                    </div>
-                    <div class="nitro-progress-percent" style="background: linear-gradient(135deg, #4ade80, #22d3ee); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">100.00%</div>
-                </div>
-                <div class="nitro-progress-track">
-                    <div class="nitro-progress-fill" style="width: 100%; background: linear-gradient(90deg, #4ade80, #22d3ee, #4ade80); animation: gradient-flow 2s linear infinite;"></div>
-                </div>
-                <div class="nitro-progress-meta">
-                    <span>TOTAL · <span style="color: var(--text-1);">{elapsed_final:.2f}s</span></span>
-                    <span class="nitro-progress-phase" style="color: var(--neon-green);">SUCCESS</span>
-                    <span>IMAGES · <span style="color: var(--text-1);">{len(result.urls)}</span></span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Download images
             images = []
             for url in result.urls:
                 data = run(download_image(url))
                 if data:
-                    try:
-                        images.append(Image.open(io.BytesIO(data)))
+                    try: images.append(Image.open(io.BytesIO(data)))
                     except: pass
             
             st.session_state.images = images
@@ -1162,24 +1222,21 @@ with tab_gen:
                             buf = io.BytesIO()
                             img.save(buf, format="PNG")
                             st.download_button(
-                                f"↓ Download #{i+1}",
+                                f"Download #{i+1}",
                                 buf.getvalue(),
                                 file_name=f"nitro_{int(time.time())}_{i}.png",
                                 mime="image/png",
                                 key=f"dl_{i}_{time.time()}",
-                                use_container_width=True,
-                            )
+                                use_container_width=True)
                 else:
-                    st.warning("Pipeline returned no images")
+                    st.warning("No images returned")
 
 
-# ═══════════ TAB BULK ═══════════
+# ═══════════ BULK ═══════════
 with tab_bulk:
-    st.markdown('<div class="sec-t">BULK PROMPTS</div>', unsafe_allow_html=True)
-    st.caption("One prompt per line · accounts rotate automatically")
-    
-    bulk_prompts = st.text_area("b", height=220,
-        placeholder="a red dragon flying over a volcano\na blue phoenix in aurora skies\na cybernetic samurai...",
+    st.markdown('<div class="sec-label">Prompts (one per line)</div>', unsafe_allow_html=True)
+    bulk_prompts = st.text_area("b", height=200,
+        placeholder="a red dragon\na blue phoenix\na cybernetic samurai...",
         label_visibility="collapsed")
     
     bc1, bc2, bc3 = st.columns(3)
@@ -1198,7 +1255,7 @@ with tab_bulk:
         bulk_conc = st.number_input("Concurrency", 1, 8, 3, key="bc")
     
     st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
-    bulk_go = st.button("▶  RUN BULK PIPELINE", use_container_width=True, disabled=not bulk_m)
+    bulk_go = st.button("Run bulk", use_container_width=True, disabled=not bulk_m, key="bulk_go")
     
     if bulk_go:
         prompts = [p.strip() for p in bulk_prompts.split("\n") if p.strip()]
@@ -1207,7 +1264,6 @@ with tab_bulk:
         else:
             progress_slot_bulk = st.empty()
             results_area = st.container()
-            
             state = {"done": 0, "total": len(prompts), "results": [None] * len(prompts)}
             
             async def bulk_run():
@@ -1215,8 +1271,7 @@ with tab_bulk:
                 async def one(i, p):
                     async with sem:
                         try:
-                            r = await do_generate(prompt=p, model_key=_mk(bulk_m),
-                                                  dimension=bulk_dim)
+                            r = await do_generate(prompt=p, model_key=_mk(bulk_m), dimension=bulk_dim)
                             state["results"][i] = r
                         except Exception as e:
                             state["results"][i] = e
@@ -1229,8 +1284,7 @@ with tab_bulk:
                 except Exception as e: holder["error"] = e
                 finally: holder["done"] = True
             
-            t = threading.Thread(target=worker, daemon=True)
-            t.start()
+            t = threading.Thread(target=worker, daemon=True); t.start()
             
             start = time.perf_counter()
             per_prompt = _mtime(bulk_m) + 5
@@ -1239,65 +1293,44 @@ with tab_bulk:
             while not holder["done"]:
                 elapsed = time.perf_counter() - start
                 done = state["done"]
-                # Blend real progress with time-based
                 real_prog = (done / len(prompts)) * 100
                 time_prog = (1 - pow(2.718281828, -elapsed / max(est_total, 1) * 1.8)) * 99
                 progress = max(real_prog, min(time_prog, 98)) if done < len(prompts) else 99
-                
                 eta = max(0, est_total - elapsed)
-                
                 progress_slot_bulk.markdown(
-                    render_progress(progress, "render", elapsed, eta,
-                                    f"{done}/{len(prompts)}"),
-                    unsafe_allow_html=True,
-                )
+                    render_progress(progress, "render", elapsed, eta, f"{done}/{len(prompts)}"),
+                    unsafe_allow_html=True)
                 time.sleep(0.1)
             
             t.join(timeout=1)
             elapsed_final = time.perf_counter() - start
-            
             ok = sum(1 for r in state["results"] if isinstance(r, Result))
             fail = len(state["results"]) - ok
             
-            progress_slot_bulk.markdown(f"""
-            <div class="nitro-progress-wrapper" style="border-color: rgba(74, 222, 128, 0.4);">
-                <div class="nitro-progress-header">
-                    <div class="nitro-progress-label" style="color: var(--neon-green);">✓ BULK COMPLETE</div>
-                    <div class="nitro-progress-percent" style="background: linear-gradient(135deg, #4ade80, #22d3ee); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">100.00%</div>
-                </div>
-                <div class="nitro-progress-track">
-                    <div class="nitro-progress-fill" style="width: 100%; background: linear-gradient(90deg, #4ade80, #22d3ee, #4ade80);"></div>
-                </div>
-                <div class="nitro-progress-meta">
-                    <span>TOTAL · <span style="color: var(--text-1);">{elapsed_final:.2f}s</span></span>
-                    <span class="nitro-progress-phase" style="color: var(--neon-green);">{ok} OK · {fail} FAIL</span>
-                    <span>PROMPTS · <span style="color: var(--text-1);">{len(prompts)}</span></span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            progress_slot_bulk.markdown(render_done(elapsed_final, ok), unsafe_allow_html=True)
             
             with results_area:
                 for i, r in enumerate(state["results"]):
                     if isinstance(r, Result) and r.urls:
-                        st.markdown(f"**#{i+1}** · `{prompts[i][:70]}` · {r.duration_s:.2f}s")
+                        st.markdown(f"**{i+1}.** {prompts[i][:70]}  ·  *{r.duration_s:.2f}s*")
                         cols = st.columns(min(len(r.urls), 4))
                         for j, url in enumerate(r.urls):
                             with cols[j % len(cols)]:
                                 st.image(url, use_container_width=True)
                     else:
                         err = str(r) if isinstance(r, Exception) else "no output"
-                        st.error(f"#{i+1} · {prompts[i][:60]} · {err[:80]}")
+                        st.error(f"{i+1}. {prompts[i][:60]} — {err[:80]}")
 
 
-# ═══════════ TAB MODELS ═══════════
+# ═══════════ MODELS ═══════════
 with tab_models:
     top_c1, top_c2, top_c3 = st.columns([2, 1, 1])
     with top_c1:
-        st.markdown('<div class="sec-t">MODEL CATALOG</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sec-label">Model catalog</div>', unsafe_allow_html=True)
     with top_c2:
-        filter_ref = st.checkbox("Reference support only")
+        filter_ref = st.checkbox("Reference only")
     with top_c3:
-        if st.button("↻  REFRESH", use_container_width=True):
+        if st.button("Refresh", use_container_width=True, key="refresh_btn"):
             try:
                 st.session_state.models = run(fetch_models(force=True))
                 st.success(f"Reloaded {len(st.session_state.models)} models")
@@ -1314,7 +1347,7 @@ with tab_models:
     for m in sorted(models, key=lambda x: _mc(x)):
         k, n, c = _mk(m), _mn(m), _mc(m)
         dims = " · ".join(_mdims(m)[:5])
-        cost_cls = "cheap" if c <= 10 else "mid" if c <= 15 else "high"
+        cost_cls = "a" if c <= 10 else "b" if c <= 15 else "c"
         tags = ""
         if m.get("referenceImage"): tags += '<span class="tag">REF</span>'
         if m.get("cfg"): tags += '<span class="tag">CFG</span>'
@@ -1328,8 +1361,8 @@ with tab_models:
             <div>
                 <div><span class="mkey">{k}</span>{tags}</div>
                 <div class="mname">{n}</div>
-                <div class="minfo">aspects: {dims} · ~{et:.0f}s</div>
+                <div class="minfo">{dims} · ~{et:.0f}s</div>
             </div>
-            <div class="cost-badge {cost_cls}">{c}cr</div>
+            <div class="cost {cost_cls}">{c}cr</div>
         </div>
         """, unsafe_allow_html=True)
