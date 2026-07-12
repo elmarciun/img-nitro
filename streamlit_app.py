@@ -6,13 +6,11 @@ from __future__ import annotations
 import asyncio, base64, json, os, random, re, string, time, io, threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional
 import httpx
 import streamlit as st
 from PIL import Image
 
-# ═══════════════════════════════════════════════════════════════════
-#                          CONFIG
 # ═══════════════════════════════════════════════════════════════════
 FB_KEY = "AIzaSyACc5e0U4DUwjdve3X4Odyjb8CNcL37Qgs"
 FB_GMPID = "1:378221804375:web:32bf22971597e5ef92dc12"
@@ -95,9 +93,10 @@ Output: Epic anime battle scene, Goku in Ultra Instinct form with silver hair an
 _OTP_RE = re.compile(r"\b(\d{6})\b")
 _PWC = string.ascii_letters + string.digits + "!@#$%"
 
+# Thread lock per accesso file account (fix bulk race condition)
+_ACC_LOCK = threading.Lock()
 
-# ═══════════════════════════════════════════════════════════════════
-#                          HTTP CORE
+
 # ═══════════════════════════════════════════════════════════════════
 def _client(timeout: int = 30) -> httpx.AsyncClient:
     return httpx.AsyncClient(
@@ -120,8 +119,6 @@ async def _get(c, url, headers=None, params=None):
     except: return r.status_code, {}
 
 
-# ═══════════════════════════════════════════════════════════════════
-#                          MAIL / OTP
 # ═══════════════════════════════════════════════════════════════════
 async def gen_email(c) -> Optional[str]:
     for _ in range(3):
@@ -166,8 +163,6 @@ def rand_pw(n: int = 14) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════
-#                          SIGNUP
-# ═══════════════════════════════════════════════════════════════════
 async def signup_one() -> dict:
     async with _client(timeout=45) as c:
         email = await gen_email(c)
@@ -200,10 +195,7 @@ async def signup_one() -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════
-#                       808FILES UPLOAD
-# ═══════════════════════════════════════════════════════════════════
 async def upload_808files(image_bytes: bytes, filename: str) -> Optional[str]:
-    """Upload via 808files → gofile → registrazione. Ritorna URL stream diretto."""
     async with httpx.AsyncClient(timeout=120, follow_redirects=True) as c:
         try:
             r1 = await c.post(f"{FILES808}/api/token")
@@ -215,7 +207,6 @@ async def upload_808files(image_bytes: bytes, filename: str) -> Optional[str]:
             ext = filename.lower().split(".")[-1] if "." in filename else "png"
             mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
                     "webp": "image/webp", "gif": "image/gif"}.get(ext, "image/png")
-            
             files = {"file": (filename, image_bytes, mime)}
             data = {"token": token}
             r2 = await c.post("https://upload.gofile.io/uploadfile",
@@ -246,16 +237,12 @@ async def upload_808files(image_bytes: bytes, filename: str) -> Optional[str]:
 
 
 # ═══════════════════════════════════════════════════════════════════
-#                       AI PROMPT ENHANCER (Nvidia)
-# ═══════════════════════════════════════════════════════════════════
 async def enhance_prompt(user_prompt: str,
                           model_key: str = "meta/llama-3.3-70b-instruct",
                           has_reference: bool = False) -> Optional[str]:
-    """Chiama LLM Nvidia per migliorare/tradurre il prompt utente."""
     system = ENHANCE_SYS
     if has_reference:
         system += "\n\nIMPORTANTE: L'utente sta usando un'IMMAGINE DI RIFERIMENTO. Integra nel prompt riferimenti come 'this person', 'this face', 'same identity as reference' mantenendo coerenza."
-    
     body = {"message": user_prompt, "model": model_key, "system": system}
     async with httpx.AsyncClient(timeout=60) as c:
         try:
@@ -277,8 +264,6 @@ async def enhance_prompt(user_prompt: str,
     return None
 
 
-# ═══════════════════════════════════════════════════════════════════
-#                          MODELS
 # ═══════════════════════════════════════════════════════════════════
 _MODELS: Optional[list] = None
 
@@ -337,24 +322,23 @@ def resolve_dim(m, ud):
 
 
 # ═══════════════════════════════════════════════════════════════════
-#                    ACCOUNTS PERSISTENCE
-# ═══════════════════════════════════════════════════════════════════
 def load_accs() -> list:
-    if not ACCS_FILE.exists(): return []
-    try: return json.loads(ACCS_FILE.read_text(encoding="utf-8"))
-    except: return []
+    with _ACC_LOCK:
+        if not ACCS_FILE.exists(): return []
+        try: return json.loads(ACCS_FILE.read_text(encoding="utf-8"))
+        except: return []
 
 def save_accs(accs: list):
-    try:
-        ACCS_FILE.parent.mkdir(exist_ok=True, parents=True)
-        tmp = ACCS_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(accs, indent=2, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, ACCS_FILE)
-    except: pass
+    with _ACC_LOCK:
+        try:
+            ACCS_FILE.parent.mkdir(exist_ok=True, parents=True)
+            tmp = ACCS_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(accs, indent=2, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, ACCS_FILE)
+        except Exception as e:
+            print(f"[save_accs] {e}")
 
 
-# ═══════════════════════════════════════════════════════════════════
-#                          TOKEN
 # ═══════════════════════════════════════════════════════════════════
 async def refresh_tok(rt: str):
     async with _client(timeout=15) as c:
@@ -377,8 +361,6 @@ def _expired(tok, safety=60):
 def _uid(tok): return _jwt(tok, "user_id") or _jwt(tok, "sub") or ""
 
 
-# ═══════════════════════════════════════════════════════════════════
-#                    RESPONSE PARSING
 # ═══════════════════════════════════════════════════════════════════
 def _pid(r):
     if isinstance(r, str) and len(r) > 8: return r
@@ -429,8 +411,6 @@ def _urls(doc):
 
 
 # ═══════════════════════════════════════════════════════════════════
-#                       CREDITS & ACCOUNT
-# ═══════════════════════════════════════════════════════════════════
 async def check_credits(tok):
     try:
         async with _client(timeout=10) as c:
@@ -451,27 +431,36 @@ async def _ensure_tok(acc):
         except: pass
     return tok
 
-async def auto_pick_account(need_cr: int, progress_state=None):
-    accs = load_accs()
-    accs_sorted = sorted(accs, key=lambda a: -int(a.get("credits", 0)))
-    for acc in accs_sorted:
-        try:
-            tok = await _ensure_tok(acc)
-            cr = await check_credits(tok)
-            acc["credits"] = cr
-            if cr >= need_cr:
-                save_accs(accs)
-                return acc
-        except: continue
-    save_accs(accs)
-    if progress_state: progress_state["phase"] = "signup"
-    new = await signup_one()
-    accs.append(new); save_accs(accs)
-    return new
+
+# Async lock separato per pick_account (evita signup paralleli inutili)
+_PICK_LOCK = asyncio.Lock()
+
+async def auto_pick_account(need_cr: int, progress_state=None, exclude_ids=None) -> dict:
+    """Trova account con crediti; se nessuno disponibile ne crea uno nuovo (thread-safe)."""
+    exclude_ids = exclude_ids or set()
+    async with _PICK_LOCK:
+        accs = load_accs()
+        accs_sorted = sorted(accs, key=lambda a: -int(a.get("credits", 0)))
+        for acc in accs_sorted:
+            if acc.get("local_id") in exclude_ids:
+                continue
+            try:
+                tok = await _ensure_tok(acc)
+                cr = await check_credits(tok)
+                acc["credits"] = cr
+                if cr >= need_cr:
+                    save_accs(accs)
+                    return acc
+            except: continue
+        save_accs(accs)
+        if progress_state: progress_state["phase"] = "signup"
+        new = await signup_one()
+        accs = load_accs()  # ricarica per non sovrascrivere modifiche parallele
+        accs.append(new)
+        save_accs(accs)
+        return new
 
 
-# ═══════════════════════════════════════════════════════════════════
-#                          POLLING
 # ═══════════════════════════════════════════════════════════════════
 async def _poll(c, tok, uid, pid, timeout=300, interval=1.5, progress_state=None):
     url = f"{FS_BASE}/users/{uid}/processes/{pid}"
@@ -500,8 +489,6 @@ async def _poll(c, tok, uid, pid, timeout=300, interval=1.5, progress_state=None
     raise TimeoutError(f"Timeout (last: {last})")
 
 
-# ═══════════════════════════════════════════════════════════════════
-#                      GENERATION
 # ═══════════════════════════════════════════════════════════════════
 def _build_payload(m, prompt, dim, count, art_style_id, ref_urls=None):
     payload = {"prompt": prompt, "model": _mk(m), "dimension": dim, "artStyleId": art_style_id}
@@ -534,7 +521,8 @@ async def do_generate(prompt: str, model_key: str, dimension: str = "1:1",
                       reference_filename: Optional[str] = None, art_style_id: int = 0,
                       enhance: bool = False,
                       enhance_model: str = "meta/llama-3.3-70b-instruct",
-                      progress_state=None) -> Result:
+                      progress_state=None,
+                      max_retries: int = 3) -> Result:
     models = await fetch_models()
     m = find_model(models, model_key)
     if not m: raise RuntimeError(f"Modello '{model_key}' non trovato")
@@ -544,7 +532,7 @@ async def do_generate(prompt: str, model_key: str, dimension: str = "1:1",
         progress_state["phase"] = "init"
         progress_state["est_time"] = _mtime(m) + 15 + (25 if reference_bytes else 0) + (8 if enhance else 0)
 
-    # Enhance prompt
+    # Enhance
     final_prompt = prompt
     if enhance:
         if progress_state: progress_state["phase"] = "enhance"
@@ -552,15 +540,8 @@ async def do_generate(prompt: str, model_key: str, dimension: str = "1:1",
                                          has_reference=bool(reference_bytes or reference_urls))
         if enhanced and len(enhanced) > 10:
             final_prompt = enhanced
-            if progress_state: progress_state["enhanced_prompt"] = enhanced
 
-    # Pick account
-    if progress_state: progress_state["phase"] = "account"
-    acc = await auto_pick_account(need, progress_state=progress_state)
-    tok = await _ensure_tok(acc); uid = _uid(tok)
-    if not uid: raise RuntimeError("Sessione non valida")
-
-    # Upload reference
+    # Upload ref (una volta sola, prima del retry loop)
     final_ref_urls = list(reference_urls) if reference_urls else []
     if reference_bytes:
         if progress_state: progress_state["phase"] = "upload"
@@ -569,25 +550,49 @@ async def do_generate(prompt: str, model_key: str, dimension: str = "1:1",
             raise RuntimeError("Upload immagine fallito")
         final_ref_urls.insert(0, uploaded_url)
 
-    # Submit
-    if progress_state: progress_state["phase"] = "submit"
+    # Retry loop con account rotation
+    tried_ids = set()
+    last_err = None
     t0 = time.perf_counter()
-    async with _client(timeout=60) as c:
-        ah = {**H_JSON, "x-platform": "web", "x-token": tok}
-        payload = _build_payload(m, final_prompt, dim, count, art_style_id,
-                                  ref_urls=final_ref_urls if final_ref_urls else None)
-        resp = await _post(c, f"{API}/process/txt-image", payload, ah)
-        pid = _pid(resp)
-        if not pid: raise RuntimeError(f"Impossibile creare job: {resp}")
-        if progress_state:
-            progress_state["phase"] = "render"
-            progress_state["pid"] = pid[:12]
-        doc = await _poll(c, tok, uid, pid, progress_state=progress_state)
 
-    dur = time.perf_counter() - t0
-    return Result(urls=_urls(doc), process_id=pid, model=_mk(m),
-                  dimension=dim, duration_s=dur,
-                  original_prompt=prompt, final_prompt=final_prompt)
+    for attempt in range(max_retries):
+        try:
+            if progress_state: progress_state["phase"] = "account"
+            acc = await auto_pick_account(need, progress_state=progress_state, exclude_ids=tried_ids)
+            tried_ids.add(acc.get("local_id"))
+            tok = await _ensure_tok(acc)
+            uid = _uid(tok)
+            if not uid:
+                last_err = RuntimeError("Sessione non valida")
+                continue
+
+            if progress_state: progress_state["phase"] = "submit"
+            async with _client(timeout=60) as c:
+                ah = {**H_JSON, "x-platform": "web", "x-token": tok}
+                payload = _build_payload(m, final_prompt, dim, count, art_style_id,
+                                          ref_urls=final_ref_urls if final_ref_urls else None)
+                resp = await _post(c, f"{API}/process/txt-image", payload, ah)
+                pid = _pid(resp)
+                if not pid:
+                    last_err = RuntimeError(f"Job non creato: {resp}")
+                    continue
+                if progress_state:
+                    progress_state["phase"] = "render"
+                    progress_state["pid"] = pid[:12]
+                doc = await _poll(c, tok, uid, pid, progress_state=progress_state)
+
+            dur = time.perf_counter() - t0
+            return Result(urls=_urls(doc), process_id=pid, model=_mk(m),
+                          dimension=dim, duration_s=dur,
+                          original_prompt=prompt, final_prompt=final_prompt)
+
+        except Exception as e:
+            last_err = e
+            print(f"[gen attempt {attempt+1}] {type(e).__name__}: {e}")
+            await asyncio.sleep(1.0 + attempt)
+            continue
+
+    raise RuntimeError(f"Generazione fallita dopo {max_retries} tentativi: {last_err}")
 
 
 async def download_image(url: str) -> Optional[bytes]:
@@ -617,38 +622,70 @@ st.set_page_config(page_title="Nitro", layout="wide", initial_sidebar_state="col
 if "theme" not in st.session_state: st.session_state.theme = "dark"
 THEME = st.session_state.theme
 
+# ═══ Palette ═══
 if THEME == "dark":
     C = {
-        "bg": "#0a0618", "bg_2": "#141028", "bg_3": "#1c1638",
-        "surface": "#1a1435", "surface_h": "#241d47",
-        "border": "rgba(139, 92, 246, 0.18)", "border_h": "rgba(139, 92, 246, 0.45)",
-        "text": "#f5f3ff", "text_2": "#c4b5fd", "text_3": "#8b7cc8",
-        "accent": "#a855f7", "accent_2": "#8b5cf6", "accent_3": "#ec4899",
-        "accent_h": "#c084fc", "danger": "#f87171", "success": "#4ade80",
-        "input_bg": "#100b24",
-        "shadow": "0 10px 40px rgba(139, 92, 246, 0.15)",
-        "glow": "0 0 60px rgba(168, 85, 247, 0.25)",
-        "btn_bg": "linear-gradient(135deg, #8b5cf6 0%, #a855f7 50%, #ec4899 100%)",
-        "btn_h":  "linear-gradient(135deg, #a855f7 0%, #c084fc 50%, #f472b6 100%)",
-        "prog_bg": "linear-gradient(90deg, #8b5cf6, #a855f7, #ec4899, #a855f7, #8b5cf6)",
-        "code_bg": "#0d0824", "code_text": "#e9d5ff",
+        "bg": "#08051a",
+        "bg_2": "#120b2e",
+        "bg_3": "#1b1240",
+        "surface": "#17102e",
+        "surface_h": "#221847",
+        "border": "rgba(147, 112, 250, 0.15)",
+        "border_h": "rgba(196, 132, 252, 0.5)",
+        "text": "#faf5ff",
+        "text_2": "#d8b4fe",
+        "text_3": "#a78bfa",
+        "accent": "#c084fc",
+        "accent_2": "#a855f7",
+        "accent_3": "#ec4899",
+        "accent_h": "#d8b4fe",
+        "danger": "#f87171",
+        "success": "#4ade80",
+        "info": "#60a5fa",
+        "input_bg": "#0e0821",
+        "shadow": "0 8px 32px rgba(139, 92, 246, 0.18)",
+        "glow": "0 0 80px rgba(168, 85, 247, 0.25)",
+        "btn_bg": "linear-gradient(135deg, #7c3aed 0%, #a855f7 40%, #ec4899 100%)",
+        "btn_h": "linear-gradient(135deg, #a855f7 0%, #c084fc 40%, #f472b6 100%)",
+        "prog_bg": "linear-gradient(90deg, #7c3aed, #a855f7, #ec4899, #a855f7, #7c3aed)",
+        "code_bg": "#0a0518",
+        "code_text": "#f3e8ff",
+        "code_key": "#c084fc",
+        "code_str": "#86efac",
+        "code_num": "#fbbf24",
     }
 else:
     C = {
-        "bg": "#ffffff", "bg_2": "#f7f7f8", "bg_3": "#ececec",
-        "surface": "#ffffff", "surface_h": "#f7f7f8",
-        "border": "#e5e5e5", "border_h": "#d0d0d0",
-        "text": "#0d0d0d", "text_2": "#5d5d5d", "text_3": "#8e8e8e",
-        "accent": "#10a37f", "accent_2": "#10a37f", "accent_3": "#10a37f",
-        "accent_h": "#0d8968", "danger": "#ef4444", "success": "#10a37f",
+        "bg": "#ffffff",
+        "bg_2": "#fafafa",
+        "bg_3": "#f0f0f0",
+        "surface": "#ffffff",
+        "surface_h": "#f7f7f8",
+        "border": "#e5e5e7",
+        "border_h": "#d0d0d5",
+        "text": "#0d0d0d",
+        "text_2": "#4a4a4a",
+        "text_3": "#8e8e93",
+        "accent": "#10a37f",
+        "accent_2": "#10a37f",
+        "accent_3": "#0d8968",
+        "accent_h": "#0d8968",
+        "danger": "#ef4444",
+        "success": "#10a37f",
+        "info": "#3b82f6",
         "input_bg": "#ffffff",
-        "shadow": "0 2px 12px rgba(0, 0, 0, 0.06)", "glow": "none",
-        "btn_bg": "#10a37f", "btn_h": "#0d8968",
-        "prog_bg": "linear-gradient(90deg, #10a37f 0%, #14c19a 50%, #10a37f 100%)",
-        "code_bg": "#f6f8fa", "code_text": "#24292f",
+        "shadow": "0 1px 3px rgba(0, 0, 0, 0.05), 0 4px 12px rgba(0, 0, 0, 0.04)",
+        "glow": "none",
+        "btn_bg": "#10a37f",
+        "btn_h": "#0d8968",
+        "prog_bg": "linear-gradient(90deg, #10a37f, #14c19a, #10a37f)",
+        "code_bg": "#fafafa",
+        "code_text": "#1a1a1a",
+        "code_key": "#7c3aed",
+        "code_str": "#059669",
+        "code_num": "#0284c7",
     }
 
-# ═══ CSS ═══
 st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
@@ -659,10 +696,11 @@ st.markdown(f"""
     --text: {C['text']}; --text-2: {C['text_2']}; --text-3: {C['text_3']};
     --accent: {C['accent']}; --accent-2: {C['accent_2']};
     --accent-3: {C['accent_3']}; --accent-h: {C['accent_h']};
-    --danger: {C['danger']}; --success: {C['success']};
+    --danger: {C['danger']}; --success: {C['success']}; --info: {C['info']};
     --input-bg: {C['input_bg']};
     --shadow: {C['shadow']}; --glow: {C['glow']};
     --code-bg: {C['code_bg']}; --code-text: {C['code_text']};
+    --code-key: {C['code_key']}; --code-str: {C['code_str']}; --code-num: {C['code_num']};
 }}
 * {{ box-sizing: border-box; }}
 html, body, [class*="css"], .stApp {{
@@ -671,22 +709,22 @@ html, body, [class*="css"], .stApp {{
 }}
 .stApp {{
     background: var(--bg) !important;
-    {"background-image: radial-gradient(ellipse 80% 50% at 20% 10%, rgba(139, 92, 246, 0.15), transparent), radial-gradient(ellipse 60% 40% at 80% 30%, rgba(168, 85, 247, 0.12), transparent), radial-gradient(ellipse 70% 45% at 50% 90%, rgba(236, 72, 153, 0.08), transparent) !important; background-attachment: fixed !important;" if THEME == "dark" else ""}
+    {"background-image: radial-gradient(ellipse 90% 60% at 15% 0%, rgba(168, 85, 247, 0.18), transparent 60%), radial-gradient(ellipse 70% 50% at 85% 20%, rgba(236, 72, 153, 0.12), transparent 60%), radial-gradient(ellipse 80% 60% at 50% 100%, rgba(124, 58, 237, 0.10), transparent 60%) !important; background-attachment: fixed !important;" if THEME == "dark" else ""}
 }}
 #MainMenu, footer, header {{ visibility: hidden; }}
 .block-container {{ padding: 1.5rem 2rem 3rem !important; max-width: 1200px !important; }}
 
 .nav {{ display: flex; align-items: center; justify-content: space-between;
     padding: 14px 22px; background: var(--surface); border: 1px solid var(--border);
-    border-radius: 16px; margin-bottom: 20px;
-    {"box-shadow: var(--glow);" if THEME == "dark" else "box-shadow: var(--shadow);"} }}
+    border-radius: 18px; margin-bottom: 20px;
+    {"box-shadow: var(--glow), inset 0 1px 0 rgba(255,255,255,0.05);" if THEME == "dark" else "box-shadow: var(--shadow);"} }}
 .logo {{ display: flex; align-items: center; gap: 12px; font-size: 18px;
     font-weight: 700; color: var(--text); letter-spacing: -0.3px; }}
-.logo-dot {{ width: 32px; height: 32px; background: {C['btn_bg']};
-    border-radius: 10px; display: flex; align-items: center; justify-content: center;
-    color: white; font-weight: 700; font-size: 15px; font-family: 'JetBrains Mono', monospace;
-    {"box-shadow: 0 4px 16px rgba(168, 85, 247, 0.4);" if THEME == "dark" else ""} }}
-.badge {{ background: var(--bg-2); color: var(--text-2); padding: 3px 9px;
+.logo-dot {{ width: 34px; height: 34px; background: {C['btn_bg']};
+    border-radius: 11px; display: flex; align-items: center; justify-content: center;
+    color: white; font-weight: 700; font-size: 16px; font-family: 'JetBrains Mono', monospace;
+    {"box-shadow: 0 4px 20px rgba(168, 85, 247, 0.5), inset 0 1px 0 rgba(255,255,255,0.2);" if THEME == "dark" else "box-shadow: 0 2px 8px rgba(16, 163, 127, 0.3);"} }}
+.badge {{ background: var(--bg-2); color: var(--text-2); padding: 3px 10px;
     border-radius: 8px; font-size: 10px; font-weight: 600; letter-spacing: 0.5px;
     margin-left: 4px; border: 1px solid var(--border); }}
 
@@ -702,16 +740,17 @@ div[data-testid="stButton"]:has(button[kind="secondary"]) button:hover {{
 
 .stTabs [data-baseweb="tab-list"] {{ gap: 4px; background: var(--bg-2);
     padding: 5px; border-radius: 100px; border: 1px solid var(--border);
-    width: fit-content; margin: 0 auto 24px auto; }}
+    width: fit-content; margin: 0 auto 24px auto;
+    {"box-shadow: inset 0 1px 3px rgba(0,0,0,0.2);" if THEME == "dark" else ""} }}
 .stTabs [data-baseweb="tab"] {{ background: transparent; color: var(--text-2);
     border-radius: 100px; padding: 9px 24px; font-weight: 500; font-size: 13px;
     letter-spacing: 0; text-transform: none; font-family: 'Inter', sans-serif !important;
-    transition: all 0.2s ease; border: none !important; }}
+    transition: all 0.25s ease; border: none !important; }}
 .stTabs [data-baseweb="tab"]:hover {{ color: var(--text); }}
 .stTabs [aria-selected="true"] {{
     background: {C['btn_bg'] if THEME == "dark" else "var(--surface)"} !important;
     color: {"white" if THEME == "dark" else "var(--text)"} !important;
-    box-shadow: {"0 4px 20px rgba(168, 85, 247, 0.4)" if THEME == "dark" else "var(--shadow)"}; }}
+    box-shadow: {"0 6px 24px rgba(168, 85, 247, 0.5)" if THEME == "dark" else "var(--shadow)"}; }}
 .stTabs [data-baseweb="tab-highlight"], .stTabs [data-baseweb="tab-border"] {{ display: none !important; }}
 
 .sec-label {{ color: var(--text) !important; font-size: 14px; font-weight: 600; margin: 20px 0 10px 0; }}
@@ -719,9 +758,10 @@ div[data-testid="stButton"]:has(button[kind="secondary"]) button:hover {{
 .stTextArea textarea {{ background: var(--input-bg) !important; border: 1px solid var(--border) !important;
     color: var(--text) !important; font-family: 'Inter', sans-serif !important;
     font-size: 15px !important; border-radius: 20px !important; padding: 16px 20px !important;
-    transition: all 0.2s !important; resize: none !important; box-shadow: var(--shadow); }}
+    transition: all 0.2s !important; resize: none !important;
+    box-shadow: {"inset 0 2px 8px rgba(0,0,0,0.15)" if THEME == "dark" else "var(--shadow)"}; }}
 .stTextArea textarea:focus {{ border-color: var(--accent) !important;
-    box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.15) !important; outline: none !important; }}
+    box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.15), var(--shadow) !important; outline: none !important; }}
 .stTextArea textarea::placeholder {{ color: var(--text-3) !important; opacity: 1 !important; }}
 .stTextInput input {{ background: var(--input-bg) !important; border: 1px solid var(--border) !important;
     color: var(--text) !important; font-family: 'Inter', sans-serif !important;
@@ -729,7 +769,6 @@ div[data-testid="stButton"]:has(button[kind="secondary"]) button:hover {{
     height: 44px !important; }}
 .stTextInput input:focus {{ border-color: var(--accent) !important;
     box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.15) !important; outline: none !important; }}
-.stTextInput input::placeholder {{ color: var(--text-3) !important; }}
 
 .stSelectbox > div > div {{ background: var(--input-bg) !important;
     border: 1px solid var(--border) !important; border-radius: 14px !important;
@@ -749,14 +788,13 @@ div[data-testid="stButton"]:has(button[kind="secondary"]) button:hover {{
     padding: 12px 16px !important; background: var(--surface) !important; }}
 [data-baseweb="menu"] li:hover {{ background: var(--surface-h) !important; color: var(--text) !important; }}
 [data-baseweb="menu"] li[aria-selected="true"] {{
-    background: {"rgba(168, 85, 247, 0.15)" if THEME == "dark" else "var(--surface-h)"} !important;
+    background: {"rgba(168, 85, 247, 0.2)" if THEME == "dark" else "var(--surface-h)"} !important;
     color: var(--text) !important; }}
 
 .stNumberInput > div > div {{ background: var(--input-bg) !important;
     border: 1px solid var(--border) !important; border-radius: 14px !important;
     min-height: 44px !important; }}
-.stNumberInput input {{ background: transparent !important; color: var(--text) !important;
-    font-family: 'Inter', sans-serif !important; }}
+.stNumberInput input {{ background: transparent !important; color: var(--text) !important; }}
 .stNumberInput button {{ background: transparent !important; color: var(--text-2) !important; border: none !important; }}
 .stNumberInput button:hover {{ background: var(--surface-h) !important; color: var(--text) !important; }}
 
@@ -764,7 +802,6 @@ div[data-testid="stButton"]:has(button[kind="secondary"]) button:hover {{
 .stFileUploader label {{ color: var(--text) !important; font-size: 14px !important;
     font-weight: 600 !important; font-family: 'Inter', sans-serif !important; }}
 
-[data-testid="stFileUploader"] {{ background: transparent !important; }}
 [data-testid="stFileUploader"] section {{ background: var(--input-bg) !important;
     border: 2px dashed var(--border) !important; border-radius: 20px !important;
     padding: 24px !important; transition: all 0.2s !important; }}
@@ -787,14 +824,14 @@ div[data-testid="stButton"] > button:not([kind="secondary"]) {{
     background: {C['btn_bg']} !important; color: white !important; border: none !important;
     font-weight: 600 !important; font-size: 15px !important; letter-spacing: 0 !important;
     padding: 14px 28px !important; border-radius: 100px !important; text-transform: none !important;
-    font-family: 'Inter', sans-serif !important; transition: all 0.2s !important;
+    font-family: 'Inter', sans-serif !important; transition: all 0.25s !important;
     min-height: 50px !important;
-    {"box-shadow: 0 4px 20px rgba(168, 85, 247, 0.35);" if THEME == "dark" else "box-shadow: none;"} }}
+    {"box-shadow: 0 6px 24px rgba(168, 85, 247, 0.4), inset 0 1px 0 rgba(255,255,255,0.15);" if THEME == "dark" else "box-shadow: 0 2px 6px rgba(16, 163, 127, 0.2);"} }}
 div[data-testid="stButton"] > button:not([kind="secondary"]):hover {{
-    background: {C['btn_h']} !important; transform: translateY(-1px) !important;
-    {"box-shadow: 0 8px 30px rgba(168, 85, 247, 0.5);" if THEME == "dark" else "box-shadow: 0 2px 8px rgba(16, 163, 127, 0.25);"} }}
+    background: {C['btn_h']} !important; transform: translateY(-2px) !important;
+    {"box-shadow: 0 12px 40px rgba(168, 85, 247, 0.6);" if THEME == "dark" else "box-shadow: 0 4px 12px rgba(16, 163, 127, 0.35);"} }}
 div[data-testid="stButton"] > button:disabled {{ background: var(--bg-3) !important;
-    color: var(--text-3) !important; opacity: 0.6 !important; box-shadow: none !important;
+    color: var(--text-3) !important; opacity: 0.5 !important; box-shadow: none !important;
     transform: none !important; }}
 
 .stDownloadButton > button {{ background: var(--surface) !important; color: var(--text) !important;
@@ -848,10 +885,10 @@ div[data-testid="stButton"] > button:disabled {{ background: var(--bg-3) !import
 .mname {{ color: var(--text-2); font-size: 13px; margin-top: 4px; }}
 .minfo {{ color: var(--text-3); font-size: 11px; margin-top: 4px; font-family: 'JetBrains Mono', monospace; }}
 .tag {{ display: inline-block;
-    background: {"rgba(168, 85, 247, 0.15)" if THEME == "dark" else "var(--bg-2)"};
+    background: {"rgba(168, 85, 247, 0.18)" if THEME == "dark" else "var(--bg-2)"};
     color: var(--accent); padding: 3px 8px; border-radius: 6px; font-size: 9px;
     font-weight: 700; margin-left: 6px; letter-spacing: 0.5px; border: 1px solid var(--border); }}
-.mtime {{ background: {"rgba(168, 85, 247, 0.1)" if THEME == "dark" else "var(--bg-2)"};
+.mtime {{ background: {"rgba(168, 85, 247, 0.12)" if THEME == "dark" else "var(--bg-2)"};
     color: var(--text-2); padding: 6px 14px; border-radius: 100px; font-weight: 600;
     font-size: 12px; font-family: 'JetBrains Mono', monospace; }}
 
@@ -873,7 +910,7 @@ div[data-testid="stButton"] > button:disabled {{ background: var(--bg-3) !import
 .stError {{ background: {"rgba(248, 113, 113, 0.1)" if THEME == "dark" else "rgba(239, 68, 68, 0.05)"} !important;
     border-color: var(--danger) !important; }}
 .stWarning {{ background: var(--bg-2) !important; border-color: var(--border) !important; color: var(--text) !important; }}
-.stInfo {{ background: var(--surface) !important; border: 1px solid var(--accent) !important;
+.stInfo {{ background: var(--surface) !important; border: 1px solid var(--info) !important;
     color: var(--text) !important; border-radius: 14px !important; }}
 .stCheckbox label {{ color: var(--text) !important; font-size: 13px !important; }}
 ::-webkit-scrollbar {{ width: 10px; height: 10px; }}
@@ -883,25 +920,26 @@ div[data-testid="stButton"] > button:disabled {{ background: var(--bg-3) !import
 .stMarkdown, .stMarkdown p, .stMarkdown span {{ color: var(--text) !important; }}
 [data-testid="stVerticalBlock"] {{ gap: 0.5rem; }}
 
+/* ═══ API DOCS ═══ */
 .api-block {{ background: var(--surface); border: 1px solid var(--border);
     border-radius: 20px; padding: 24px 28px; margin-bottom: 20px; box-shadow: var(--shadow); }}
-.api-title {{ display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }}
-.api-method {{ display: inline-block; padding: 4px 12px; border-radius: 8px;
+.api-title {{ display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }}
+.api-method {{ display: inline-block; padding: 5px 12px; border-radius: 8px;
     font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }}
-.api-method.post {{ background: {"rgba(74, 222, 128, 0.15)" if THEME == "dark" else "rgba(16, 163, 127, 0.1)"};
+.api-method.post {{ background: {"rgba(74, 222, 128, 0.18)" if THEME == "dark" else "rgba(16, 163, 127, 0.1)"};
     color: var(--success); border: 1px solid var(--success); }}
-.api-method.get {{ background: {"rgba(96, 165, 250, 0.15)" if THEME == "dark" else "rgba(59, 130, 246, 0.1)"};
-    color: #60a5fa; border: 1px solid #60a5fa; }}
+.api-method.get {{ background: {"rgba(96, 165, 250, 0.18)" if THEME == "dark" else "rgba(59, 130, 246, 0.1)"};
+    color: var(--info); border: 1px solid var(--info); }}
 .api-url {{ font-family: 'JetBrains Mono', monospace; font-size: 13px;
     color: var(--text); background: var(--bg-2); padding: 6px 12px;
-    border-radius: 8px; border: 1px solid var(--border); }}
-.api-desc {{ color: var(--text-2); font-size: 14px; margin: 8px 0 16px 0; line-height: 1.5; }}
+    border-radius: 8px; border: 1px solid var(--border); word-break: break-all; }}
+.api-desc {{ color: var(--text-2); font-size: 14px; margin: 8px 0 16px 0; line-height: 1.6; }}
 
 div[data-testid="stCodeBlock"] pre {{
     background: var(--code-bg) !important; color: var(--code-text) !important;
-    border-radius: 12px !important; padding: 16px !important;
+    border-radius: 12px !important; padding: 18px !important;
     font-family: 'JetBrains Mono', monospace !important;
-    font-size: 13px !important; line-height: 1.6 !important;
+    font-size: 13px !important; line-height: 1.65 !important;
     border: 1px solid var(--border) !important; }}
 div[data-testid="stCodeBlock"] code {{
     color: var(--code-text) !important; font-family: 'JetBrains Mono', monospace !important; }}
@@ -919,8 +957,7 @@ code:not(pre code) {{
 
 .streamlit-expanderHeader {{
     background: var(--surface) !important; color: var(--text) !important;
-    border: 1px solid var(--border) !important; border-radius: 12px !important;
-    font-family: 'Inter', sans-serif !important; }}
+    border: 1px solid var(--border) !important; border-radius: 12px !important; }}
 .streamlit-expanderHeader:hover {{ border-color: var(--accent) !important; }}
 .streamlit-expanderContent {{
     background: var(--surface) !important;
@@ -928,6 +965,7 @@ code:not(pre code) {{
     border-radius: 0 0 12px 12px !important; padding: 16px !important; }}
 </style>
 """, unsafe_allow_html=True)
+
 
 # ═══ NAVBAR ═══
 nav_l, nav_r = st.columns([6, 1.2])
@@ -944,7 +982,7 @@ with nav_r:
         st.session_state.theme = "dark" if THEME == "light" else "light"
         st.rerun()
 
-# ═══ STATE ═══
+# STATE
 if "models" not in st.session_state:
     try: st.session_state.models = run(fetch_models())
     except Exception as e:
@@ -1013,9 +1051,7 @@ def placeholder():
 tab_gen, tab_bulk, tab_models, tab_api = st.tabs(["Genera", "Multiplo", "Modelli", "API"])
 
 
-# ═══════════════════════════════════════════════════════════════════
-#                          TAB: GENERA
-# ═══════════════════════════════════════════════════════════════════
+# ═══ GENERA ═══
 with tab_gen:
     col_l, col_r = st.columns([1, 1.4], gap="large")
     with col_l:
@@ -1023,7 +1059,6 @@ with tab_gen:
         prompt = st.text_area("p", height=130, label_visibility="collapsed",
                               placeholder="Descrivi in italiano quello che vuoi creare...")
 
-        # AI Enhance toggle
         enh_c1, enh_c2 = st.columns([1, 2])
         with enh_c1:
             use_enhance = st.checkbox("✨ Migliora con AI", value=True,
@@ -1033,8 +1068,7 @@ with tab_gen:
                 enh_choice = st.selectbox(
                     "e", list(LLM_MODELS.keys()),
                     format_func=lambda k: LLM_MODELS[k]["label"],
-                    label_visibility="collapsed", index=0,
-                )
+                    label_visibility="collapsed", index=0)
                 enh_model_key = LLM_MODELS[enh_choice]["key"]
             else:
                 enh_model_key = None
@@ -1118,7 +1152,7 @@ with tab_gen:
 
         est_extra = (25 if ref_bytes else 0) + (8 if use_enhance else 0)
         progress_state = {
-            "phase": "init", "status": "", "pid": "", "enhanced_prompt": "",
+            "phase": "init", "status": "", "pid": "",
             "est_time": _mtime(m_sel) + 15 + est_extra,
         }
         result_holder = {"result": None, "error": None, "done": False}
@@ -1160,7 +1194,7 @@ with tab_gen:
 
         if result_holder["error"]:
             err = result_holder["error"]
-            progress_slot.error(f"Errore durante la generazione: {str(err)[:200]}")
+            progress_slot.error(f"Errore durante la generazione: {str(err)[:250]}")
             output_slot.markdown(placeholder(), unsafe_allow_html=True)
         else:
             result = result_holder["result"]
@@ -1204,9 +1238,7 @@ with tab_gen:
                     st.warning("Nessuna immagine ricevuta")
 
 
-# ═══════════════════════════════════════════════════════════════════
-#                          TAB: MULTIPLO
-# ═══════════════════════════════════════════════════════════════════
+# ═══ MULTIPLO ═══
 with tab_bulk:
     st.markdown('<div class="sec-label">Descrizioni (una per riga)</div>', unsafe_allow_html=True)
     bulk_prompts = st.text_area("b", height=200,
@@ -1246,7 +1278,8 @@ with tab_bulk:
                                  key="bd", label_visibility="collapsed")
     with bc3:
         st.markdown('<div class="sec-label">Contemporanee</div>', unsafe_allow_html=True)
-        bulk_conc = st.number_input("bc", 1, 8, 3, key="bc", label_visibility="collapsed")
+        bulk_conc = st.number_input("bc", 1, 5, 2, key="bc", label_visibility="collapsed",
+                                     help="Numero di generazioni parallele (max consigliato: 3)")
 
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
     bulk_go = st.button("Genera tutte", use_container_width=True, disabled=not bulk_m, key="bulk_go")
@@ -1268,7 +1301,8 @@ with tab_bulk:
                             r = await do_generate(
                                 prompt=p, model_key=_mk(bulk_m), dimension=bulk_dim,
                                 enhance=bulk_use_enhance,
-                                enhance_model=bulk_enh_model or "meta/llama-3.1-8b-instruct")
+                                enhance_model=bulk_enh_model or "meta/llama-3.1-8b-instruct",
+                                max_retries=3)
                             state["results"][i] = r
                         except Exception as e:
                             state["results"][i] = e
@@ -1316,12 +1350,10 @@ with tab_bulk:
                                 st.image(url, use_container_width=True)
                     else:
                         err = str(r) if isinstance(r, Exception) else "nessun output"
-                        st.error(f"{i+1}. {prompts[i][:60]} — {err[:80]}")
+                        st.error(f"{i+1}. {prompts[i][:60]} — {err[:100]}")
 
 
-# ═══════════════════════════════════════════════════════════════════
-#                          TAB: MODELLI
-# ═══════════════════════════════════════════════════════════════════
+# ═══ MODELLI ═══
 with tab_models:
     top_c1, top_c2, top_c3 = st.columns([2, 1, 1])
     with top_c1:
@@ -1364,262 +1396,694 @@ with tab_models:
 
 
 # ═══════════════════════════════════════════════════════════════════
-#                          TAB: API DOCS
+#                       API DOCS - REAL EXAMPLES
 # ═══════════════════════════════════════════════════════════════════
 with tab_api:
     st.markdown("""
     <div class="api-block">
         <div class="api-title">
-            <span style="font-size: 22px; font-weight: 700;">Documentazione API</span>
+            <span style="font-size: 24px; font-weight: 700;">Documentazione API</span>
             <span class="badge">v1</span>
         </div>
         <div class="api-desc">
-            Integra Nitro nei tuoi progetti con semplici richieste HTTP.
-            Zero autenticazione richiesta — il servizio gestisce tutto automaticamente.
+            Le API mostrate qui sono <strong>funzionanti e testate</strong>. Usa direttamente i worker
+            (<code>808files</code>, <code>Nvidia LLM</code>, <code>mail808</code>) e le API di davinci per replicare
+            il funzionamento di Nitro nel tuo codice. Ogni esempio è pronto da copiare e incollare.
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # ═══ /api/generate ═══
+    # ═══ 1. 808FILES UPLOAD ═══
     st.markdown("""
     <div class="api-block">
         <div class="api-title">
             <span class="api-method post">POST</span>
-            <span class="api-url">/api/generate</span>
+            <span class="api-url">https://808files.elmarciun.workers.dev/api/token</span>
+        </div>
+        <div class="api-title">
+            <span class="api-method post">POST</span>
+            <span class="api-url">https://upload.gofile.io/uploadfile</span>
+        </div>
+        <div class="api-title">
+            <span class="api-method post">POST</span>
+            <span class="api-url">https://808files.elmarciun.workers.dev/api/register</span>
         </div>
         <div class="api-desc">
-            Genera una o più immagini da una descrizione testuale.
-            Con <code>enhance: true</code> l'AI migliora automaticamente il prompt.
+            <strong>Upload file anonimo permanente (3-step).</strong>
+            Ritorna un URL diretto usabile ovunque, senza autenticazione.
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("**Body:**")
-    st.code("""{
-  "prompt": "goku che combatte drago rosso e fenice",
-  "model": "NANO_BANANA_PRO",
-  "dimension": "16:9",
-  "count": 1,
-  "enhance": true,
-  "enhance_model": "smart",
-  "reference_image_url": "https://..."
-}""", language="json")
-
-    st.markdown("**Risposta:**")
-    st.code("""{
-  "success": true,
-  "urls": ["https://storage.googleapis.com/..."],
-  "model": "NANO_BANANA_PRO",
-  "dimension": "16:9",
-  "duration_s": 12.34,
-  "original_prompt": "goku che combatte drago rosso e fenice",
-  "final_prompt": "Epic anime battle scene, Goku Ultra Instinct fighting..."
-}""", language="json")
-
-    st.markdown('<div class="sec-label">Esempi di codice</div>', unsafe_allow_html=True)
-    ex_py, ex_curl, ex_js, ex_ps = st.tabs(["Python", "cURL", "JavaScript", "PowerShell"])
-    with ex_py:
+    up_py, up_curl, up_js, up_ps = st.tabs(["Python", "cURL", "JavaScript", "PowerShell"])
+    with up_py:
         st.code('''import requests
 
-r = requests.post("https://nitro.example.com/api/generate", json={
-    "prompt": "goku che combatte drago rosso e fenice",
-    "model": "NANO_BANANA_PRO",
-    "dimension": "16:9",
-    "enhance": True
+API = "https://808files.elmarciun.workers.dev"
+
+# Step 1: ottieni token
+token = requests.post(f"{API}/api/token").json()["token"]
+
+# Step 2: upload su gofile
+with open("mia_foto.jpg", "rb") as f:
+    r = requests.post(
+        "https://upload.gofile.io/uploadfile",
+        data={"token": token},
+        files={"file": f},
+    )
+d = r.json()["data"]
+
+# Step 3: registra e ottieni URL permanente
+r = requests.post(f"{API}/api/register", json={
+    "token": token,
+    "id": d["id"],
+    "server": d.get("servers", ["store1"])[0],
+    "filename": d["name"],
+    "folder_id": d["parentFolder"],
+    "folder_code": d.get("parentFolderCode"),
+    "download_page": d["downloadPage"],
+    "size": d["size"],
+    "mimetype": d.get("mimetype", "application/octet-stream"),
 })
-data = r.json()
-for url in data["urls"]:
-    print("Immagine:", url)
-    img = requests.get(url).content
-    with open("output.png", "wb") as f:
-        f.write(img)
+result = r.json()
+print("URL diretto:", result["stream"])
+print("Link condivisione:", result["link"])
 ''', language="python")
-    with ex_curl:
-        st.code('''curl -X POST https://nitro.example.com/api/generate \\
+
+    with up_curl:
+        st.code('''# Step 1: token
+TOKEN=$(curl -s -X POST https://808files.elmarciun.workers.dev/api/token | jq -r .token)
+
+# Step 2: upload
+UPLOAD=$(curl -s -X POST https://upload.gofile.io/uploadfile \\
+    -F "token=$TOKEN" -F "file=@mia_foto.jpg")
+
+FILE_ID=$(echo $UPLOAD | jq -r .data.id)
+FILE_NAME=$(echo $UPLOAD | jq -r .data.name)
+FOLDER=$(echo $UPLOAD | jq -r .data.parentFolder)
+SERVER=$(echo $UPLOAD | jq -r '.data.servers[0]')
+SIZE=$(echo $UPLOAD | jq -r .data.size)
+PAGE=$(echo $UPLOAD | jq -r .data.downloadPage)
+
+# Step 3: register
+curl -X POST https://808files.elmarciun.workers.dev/api/register \\
   -H "Content-Type: application/json" \\
-  -d '{
-    "prompt": "goku che combatte drago rosso e fenice",
-    "model": "NANO_BANANA_PRO",
-    "dimension": "16:9",
-    "enhance": true
-  }'
+  -d "{
+    \\"token\\": \\"$TOKEN\\",
+    \\"id\\": \\"$FILE_ID\\",
+    \\"server\\": \\"$SERVER\\",
+    \\"filename\\": \\"$FILE_NAME\\",
+    \\"folder_id\\": \\"$FOLDER\\",
+    \\"download_page\\": \\"$PAGE\\",
+    \\"size\\": $SIZE,
+    \\"mimetype\\": \\"image/jpeg\\"
+  }"
 ''', language="bash")
-    with ex_js:
-        st.code('''const res = await fetch("https://nitro.example.com/api/generate", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    prompt: "goku che combatte drago rosso e fenice",
-    model: "NANO_BANANA_PRO",
-    dimension: "16:9",
-    enhance: true
-  })
-});
-const data = await res.json();
-data.urls.forEach(url => console.log(url));
+
+    with up_js:
+        st.code('''const API = "https://808files.elmarciun.workers.dev";
+
+async function upload808(file) {
+  // Step 1: token
+  const { token } = await fetch(`${API}/api/token`, {
+    method: "POST"
+  }).then(r => r.json());
+
+  // Step 2: upload su gofile
+  const fd = new FormData();
+  fd.append("token", token);
+  fd.append("file", file);
+  const uploadRes = await fetch("https://upload.gofile.io/uploadfile", {
+    method: "POST",
+    body: fd,
+  }).then(r => r.json());
+  const d = uploadRes.data;
+
+  // Step 3: register
+  const reg = await fetch(`${API}/api/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      token,
+      id: d.id,
+      server: (d.servers || ["store1"])[0],
+      filename: d.name,
+      folder_id: d.parentFolder,
+      folder_code: d.parentFolderCode,
+      download_page: d.downloadPage,
+      size: d.size,
+      mimetype: d.mimetype || "application/octet-stream",
+    }),
+  }).then(r => r.json());
+
+  return reg.stream; // URL diretto permanente
+}
+
+// Uso:
+const fileInput = document.querySelector('input[type=file]');
+const url = await upload808(fileInput.files[0]);
+console.log("URL:", url);
 ''', language="javascript")
-    with ex_ps:
-        st.code('''$body = @{
-    prompt    = "goku che combatte drago rosso e fenice"
-    model     = "NANO_BANANA_PRO"
-    dimension = "16:9"
-    enhance   = $true
+
+    with up_ps:
+        st.code('''$API = "https://808files.elmarciun.workers.dev"
+
+# Step 1: token
+$token = (Invoke-RestMethod -Uri "$API/api/token" -Method Post).token
+
+# Step 2: upload
+$form = @{
+    token = $token
+    file  = Get-Item -Path "mia_foto.jpg"
+}
+$upload = Invoke-RestMethod -Uri "https://upload.gofile.io/uploadfile" `
+    -Method Post -Form $form
+$d = $upload.data
+
+# Step 3: register
+$body = @{
+    token = $token
+    id = $d.id
+    server = $d.servers[0]
+    filename = $d.name
+    folder_id = $d.parentFolder
+    folder_code = $d.parentFolderCode
+    download_page = $d.downloadPage
+    size = $d.size
+    mimetype = $d.mimetype
 } | ConvertTo-Json
 
-$res = Invoke-RestMethod -Uri "https://nitro.example.com/api/generate" `
+$result = Invoke-RestMethod -Uri "$API/api/register" `
     -Method Post -Body $body -ContentType "application/json"
 
-foreach ($url in $res.urls) {
-    Write-Host $url
-    Invoke-WebRequest -Uri $url -OutFile "output.png"
-}
+Write-Host "URL:" $result.stream
 ''', language="powershell")
 
-    # ═══ /api/enhance ═══
+
+    # ═══ 2. NVIDIA LLM - ENHANCE PROMPT ═══
     st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
     st.markdown("""
     <div class="api-block">
         <div class="api-title">
             <span class="api-method post">POST</span>
-            <span class="api-url">/api/enhance</span>
+            <span class="api-url">https://elmarcito-nvidia.hf.space/v1/chat</span>
+        </div>
+        <div class="api-title">
+            <span class="api-method get">GET</span>
+            <span class="api-url">https://elmarcito-nvidia.hf.space/v1/chat/get</span>
         </div>
         <div class="api-desc">
-            Trasforma un prompt italiano in un prompt inglese ottimizzato per generatori AI.
-            Powered by <code>Nvidia NIM · Llama 3.3 70B</code>.
+            <strong>Chat con modelli LLM Nvidia NIM.</strong>
+            Usa questa API per far ragionare un LLM sul tuo prompt italiano e trasformarlo in un prompt inglese
+            ottimizzato per generatori di immagini. Modelli disponibili:
+            <code>meta/llama-3.3-70b-instruct</code>, <code>meta/llama-3.1-8b-instruct</code>,
+            <code>nvidia/nemotron-3-nano-omni</code>, <code>qwen/qwen3-next-80b</code>, e molti altri.
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.code("""{
-  "prompt": "un gatto sul tetto al tramonto",
-  "model": "smart"
-}""", language="json")
+    st.markdown("**Body per POST:**")
+    st.code('''{
+  "message": "goku che combatte drago rosso e fenice",
+  "model": "meta/llama-3.3-70b-instruct",
+  "system": "Sei un esperto di prompt per generatori di immagini AI. Traduci in inglese e arricchisci con dettagli visivi cinematografici. Rispondi solo con il prompt migliorato."
+}''', language="json")
 
-    ex_py_e, ex_curl_e, ex_js_e = st.tabs(["Python", "cURL", "JavaScript"])
-    with ex_py_e:
+    en_py, en_curl, en_js, en_ps = st.tabs(["Python", "cURL", "JavaScript", "PowerShell"])
+    with en_py:
         st.code('''import requests
 
-r = requests.post("https://nitro.example.com/api/enhance", json={
-    "prompt": "un gatto sul tetto al tramonto",
-    "model": "smart"
-})
-print(r.json()["enhanced"])
+def enhance_prompt(italian_prompt):
+    system = """Sei un esperto di prompt per generatori di immagini AI.
+Traduci sempre in inglese, aggiungi dettagli visivi (illuminazione, stile, atmosfera).
+Se ci sono più soggetti, includili tutti. Rispondi SOLO con il prompt migliorato."""
+    
+    r = requests.post(
+        "https://elmarcito-nvidia.hf.space/v1/chat",
+        json={
+            "message": italian_prompt,
+            "model": "meta/llama-3.3-70b-instruct",
+            "system": system,
+        },
+        timeout=60,
+    )
+    data = r.json()
+    # La risposta può essere in vari campi
+    for k in ("response", "message", "content", "text"):
+        if k in data and data[k]:
+            return data[k].strip().strip('"')
+    return None
+
+result = enhance_prompt("goku che combatte drago rosso e fenice")
+print(result)
+# Output: "Epic anime battle scene, Goku in Ultra Instinct form..."
 ''', language="python")
-    with ex_curl_e:
-        st.code('''curl -X POST https://nitro.example.com/api/enhance \\
+
+    with en_curl:
+        st.code('''# POST (raccomandato)
+curl -X POST https://elmarcito-nvidia.hf.space/v1/chat \\
   -H "Content-Type: application/json" \\
-  -d '{"prompt": "un gatto sul tetto al tramonto", "model": "smart"}'
+  -d '{
+    "message": "goku che combatte drago rosso e fenice",
+    "model": "meta/llama-3.3-70b-instruct",
+    "system": "Sei un esperto di prompt AI. Traduci in inglese con dettagli visivi cinematografici. Rispondi solo con il prompt."
+  }'
+
+# GET (quick test)
+curl "https://elmarcito-nvidia.hf.space/v1/chat/get?message=Ciao&model=meta/llama-3.1-8b-instruct"
+
+# SSE Streaming
+curl -N "https://elmarcito-nvidia.hf.space/v1/chat/stream?message=Ciao&model=meta/llama-3.1-8b-instruct"
 ''', language="bash")
-    with ex_js_e:
-        st.code('''const r = await fetch("https://nitro.example.com/api/enhance", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ prompt: "un gatto sul tetto", model: "smart" })
-});
-console.log((await r.json()).enhanced);
+
+    with en_js:
+        st.code('''async function enhancePrompt(italianPrompt) {
+  const system = `Sei un esperto di prompt per generatori di immagini AI.
+Traduci sempre in inglese, aggiungi dettagli visivi.
+Se ci sono più soggetti, includili tutti. Rispondi SOLO con il prompt migliorato.`;
+
+  const r = await fetch("https://elmarcito-nvidia.hf.space/v1/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message: italianPrompt,
+      model: "meta/llama-3.3-70b-instruct",
+      system,
+    }),
+  });
+  const data = await r.json();
+  for (const k of ["response", "message", "content", "text"]) {
+    if (data[k]) return data[k].trim().replace(/^["']|["']$/g, "");
+  }
+  return null;
+}
+
+const enhanced = await enhancePrompt("goku che combatte drago rosso");
+console.log(enhanced);
 ''', language="javascript")
 
-    # ═══ /api/upload ═══
-    st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
-    st.markdown("""
-    <div class="api-block">
-        <div class="api-title">
-            <span class="api-method post">POST</span>
-            <span class="api-url">/api/upload</span>
-        </div>
-        <div class="api-desc">
-            Carica un'immagine per usarla come riferimento. Storage permanente via <code>808files</code>.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    with en_ps:
+        st.code('''$system = "Sei un esperto di prompt AI. Traduci in inglese con dettagli visivi. Rispondi solo con il prompt."
 
-    ex_py_u, ex_curl_u, ex_js_u = st.tabs(["Python", "cURL", "JavaScript"])
-    with ex_py_u:
-        st.code('''import requests
+$body = @{
+    message = "goku che combatte drago rosso e fenice"
+    model   = "meta/llama-3.3-70b-instruct"
+    system  = $system
+} | ConvertTo-Json
 
-with open("mia_foto.jpg", "rb") as f:
-    r = requests.post("https://nitro.example.com/api/upload",
-                       files={"file": f})
-ref_url = r.json()["url"]
+$r = Invoke-RestMethod -Uri "https://elmarcito-nvidia.hf.space/v1/chat" `
+    -Method Post -Body $body -ContentType "application/json"
 
-# Genera con riferimento
-requests.post("https://nitro.example.com/api/generate", json={
-    "prompt": "questa persona in stile anime cyberpunk",
-    "model": "NANO_BANANA_PRO",
-    "reference_image_url": ref_url,
-    "enhance": True
-})
-''', language="python")
-    with ex_curl_u:
-        st.code('''curl -X POST https://nitro.example.com/api/upload -F "file=@mia_foto.jpg"
-''', language="bash")
-    with ex_js_u:
-        st.code('''const fd = new FormData();
-fd.append("file", fileInput.files[0]);
-const up = await fetch("https://nitro.example.com/api/upload", {
-  method: "POST", body: fd
-}).then(r => r.json());
-console.log(up.url);
-''', language="javascript")
+Write-Host $r.response
+''', language="powershell")
 
-    # ═══ /api/models ═══
+
+    # ═══ 3. MAIL808 - EMAIL TEMPORANEE ═══
     st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
     st.markdown("""
     <div class="api-block">
         <div class="api-title">
             <span class="api-method get">GET</span>
-            <span class="api-url">/api/models</span>
+            <span class="api-url">https://mail808.elmarciun.workers.dev/genera</span>
+        </div>
+        <div class="api-title">
+            <span class="api-method get">GET</span>
+            <span class="api-url">https://mail808.elmarciun.workers.dev/attendi/{email}</span>
         </div>
         <div class="api-desc">
-            Elenco completo dei modelli disponibili con caratteristiche.
+            <strong>Email temporanee usa-e-getta con attesa OTP.</strong>
+            Genera indirizzi Gmail dot-trick e cattura codici a 6 cifre automaticamente.
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.code('curl https://nitro.example.com/api/models', language="bash")
+    mail_py, mail_curl, mail_js = st.tabs(["Python", "cURL", "JavaScript"])
+    with mail_py:
+        st.code('''import requests, re, time
 
-    # ═══ 808files ═══
+MAIL = "https://mail808.elmarciun.workers.dev"
+
+# Genera email temporanea Gmail
+email = requests.get(f"{MAIL}/genera?tipi=dotGmail&semplice=1").text.strip()
+print("Email:", email)
+
+# Attendi OTP a 6 cifre (max 90s)
+deadline = time.time() + 90
+while time.time() < deadline:
+    r = requests.get(f"{MAIL}/attendi/{email}", params={
+        "mittente": "davinci",  # filtra per mittente (opzionale)
+        "codice": 1,             # estrai solo il codice
+        "semplice": 1,
+        "timeout": 15000,
+    }, timeout=20)
+    if r.status_code == 200 and r.text.strip():
+        match = re.search(r"\\b(\\d{6})\\b", r.text)
+        if match:
+            print("OTP:", match.group(1))
+            break
+    time.sleep(1)
+''', language="python")
+
+    with mail_curl:
+        st.code('''# Genera email
+curl "https://mail808.elmarciun.workers.dev/genera?tipi=dotGmail&semplice=1"
+
+# Attendi OTP (blocking, max 15s per chiamata)
+curl "https://mail808.elmarciun.workers.dev/attendi/your.email@gmail.com?mittente=davinci&codice=1&semplice=1&timeout=15000"
+
+# Leggi inbox
+curl "https://mail808.elmarciun.workers.dev/inbox/your.email@gmail.com"
+''', language="bash")
+
+    with mail_js:
+        st.code('''const MAIL = "https://mail808.elmarciun.workers.dev";
+
+// Genera email
+const email = (await fetch(`${MAIL}/genera?tipi=dotGmail&semplice=1`)
+  .then(r => r.text())).trim();
+console.log("Email:", email);
+
+// Attendi OTP
+const params = new URLSearchParams({
+  mittente: "davinci", codice: "1", semplice: "1", timeout: "60000"
+});
+const otp = await fetch(`${MAIL}/attendi/${email}?${params}`)
+  .then(r => r.text());
+console.log("OTP:", otp.match(/\\b(\\d{6})\\b/)?.[1]);
+''', language="javascript")
+
+
+    # ═══ 4. DAVINCI GENERATE (funziona con auth token JWT) ═══
     st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
     st.markdown("""
     <div class="api-block">
         <div class="api-title">
-            <span style="font-size: 16px; font-weight: 700;">Storage File</span>
-            <span class="badge">808files</span>
+            <span class="api-method get">GET</span>
+            <span class="api-url">https://wl-cms-web-prod.davinci.ai/image-models</span>
+        </div>
+        <div class="api-title">
+            <span class="api-method post">POST</span>
+            <span class="api-url">https://wl-api-web-prod.davinci.ai/process/txt-image</span>
         </div>
         <div class="api-desc">
-            Nitro usa <code>808files</code> per upload anonimo permanente. Endpoint diretti:
+            <strong>API dirette davinci.ai per generare immagini.</strong>
+            Richiedono un token JWT Firebase (ottenibile via signup/login).
+            Ecco il flusso completo che replica quello di Nitro.
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.code('''import requests
+    dv_py = st.tabs(["Python — flusso completo"])[0]
+    with dv_py:
+        st.code('''"""
+Flusso completo per generare un'immagine su davinci.ai.
+Include signup automatico + upload riferimento + generazione.
+"""
+import requests, time, base64, json, random, string, re
 
-API = "https://808files.elmarciun.workers.dev"
+FB_KEY = "AIzaSyACc5e0U4DUwjdve3X4Odyjb8CNcL37Qgs"
+FB_GMPID = "1:378221804375:web:32bf22971597e5ef92dc12"
+API = "https://wl-api-web-prod.davinci.ai"
+CMS = "https://wl-cms-web-prod.davinci.ai"
+FS  = "https://firestore.googleapis.com/v1/projects/davinciweb-b8892/databases/(default)/documents"
+MAIL = "https://mail808.elmarciun.workers.dev"
 
-# 1. Token
-token = requests.post(f"{API}/api/token").json()["token"]
+HEADERS = {
+    "origin": "https://davinci.ai",
+    "referer": "https://davinci.ai/",
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0) Chrome/131.0",
+}
+H_FB = {**HEADERS, "content-type": "application/json",
+        "x-firebase-gmpid": FB_GMPID,
+        "x-client-version": "Chrome/JsCore/11.10.0/FirebaseCore-web"}
 
-# 2. Upload su gofile
-with open("file.png", "rb") as f:
-    r = requests.post("https://upload.gofile.io/uploadfile",
-        data={"token": token}, files={"file": f})
-d = r.json()["data"]
 
-# 3. Registra
-r = requests.post(f"{API}/api/register", json={
-    "token": token, "id": d["id"],
-    "server": d.get("servers", ["store1"])[0],
-    "filename": d["name"], "folder_id": d["parentFolder"],
-    "folder_code": d.get("parentFolderCode"),
-    "download_page": d["downloadPage"],
-    "size": d["size"], "mimetype": d.get("mimetype", "application/octet-stream")
-})
-print("URL:", r.json()["stream"])
+def signup():
+    """Crea un account davinci con verifica email OTP."""
+    email = requests.get(f"{MAIL}/genera?tipi=dotGmail&semplice=1").text.strip()
+    pw = "".join(random.choices(string.ascii_letters + string.digits, k=14)) + "!"
+
+    # 1. Firebase signup
+    d = requests.post(
+        f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={FB_KEY}",
+        headers=H_FB,
+        json={"returnSecureToken": True, "email": email,
+              "password": pw, "clientType": "CLIENT_TYPE_WEB"},
+    ).json()
+    id_token = d["idToken"]
+    refresh_token = d["refreshToken"]
+
+    # 2. Send OTP
+    requests.post(f"{API}/email-verification-send",
+                  headers={"content-type": "application/json"},
+                  json={"email": email})
+
+    # 3. Wait OTP
+    otp = None
+    for _ in range(30):
+        time.sleep(3)
+        r = requests.get(f"{MAIL}/attendi/{email}",
+            params={"mittente": "davinci", "codice": 1, "semplice": 1, "timeout": 10000})
+        if r.status_code == 200:
+            m = re.search(r"\\b(\\d{6})\\b", r.text)
+            if m:
+                otp = m.group(1)
+                break
+    if not otp: raise RuntimeError("OTP timeout")
+
+    # 4. Verify OTP
+    requests.post(f"{API}/email-verification-verify-code",
+                  headers={"content-type": "application/json"},
+                  json={"email": email, "code": otp})
+
+    # 5. Re-login per token aggiornato
+    d2 = requests.post(
+        f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FB_KEY}",
+        headers=H_FB,
+        json={"returnSecureToken": True, "email": email,
+              "password": pw, "clientType": "CLIENT_TYPE_WEB"},
+    ).json()
+    return d2["idToken"], d2["refreshToken"]
+
+
+def get_uid(token):
+    payload = token.split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    return json.loads(base64.urlsafe_b64decode(payload))["user_id"]
+
+
+def list_models():
+    return requests.get(f"{CMS}/image-models", headers=HEADERS).json()["data"]
+
+
+def generate(prompt, model="FLUX_2_TURBO", dimension="1:1", token=None,
+             reference_url=None):
+    """Genera immagine e ritorna URLs."""
+    if not token:
+        token, _ = signup()
+
+    uid = get_uid(token)
+    ah = {**HEADERS, "content-type": "application/json",
+          "x-platform": "web", "x-token": token}
+
+    payload = {
+        "prompt": prompt, "model": model,
+        "dimension": dimension, "artStyleId": 0, "imageCount": 1,
+    }
+    if reference_url:
+        payload["referenceImages"] = [reference_url]
+        payload["referenceImage"] = reference_url
+
+    # Submit
+    r = requests.post(f"{API}/process/txt-image", json=payload, headers=ah)
+    data = r.json()
+    pid = data.get("processId") or (data.get("data") or [{}])[0].get("processId")
+    if not pid: raise RuntimeError(f"No PID: {data}")
+
+    # Poll Firestore
+    url = f"{FS}/users/{uid}/processes/{pid}"
+    for _ in range(150):
+        time.sleep(2)
+        r = requests.get(url, headers={"authorization": f"Bearer {token}"})
+        if r.status_code != 200: continue
+        fields = r.json().get("fields", {})
+        status = (fields.get("status", {}).get("stringValue") or "").upper()
+        if status in ("COMPLETED", "SUCCESS", "DONE"):
+            # Estrai URL immagini
+            urls = []
+            for key in ("outputs", "images", "results"):
+                arr = fields.get(key, {}).get("arrayValue", {}).get("values", [])
+                for item in arr:
+                    v = item.get("stringValue", "")
+                    if v.startswith("http"): urls.append(v)
+            return urls
+        if status in ("FAILED", "ERROR"):
+            raise RuntimeError(f"Failed: {status}")
+    raise TimeoutError("Polling timeout")
+
+
+# ══ ESEMPIO USO ══
+if __name__ == "__main__":
+    # Signup nuovo account (o riusa token esistente)
+    token, refresh = signup()
+    print("Token ottenuto")
+
+    # Genera
+    urls = generate(
+        prompt="Epic anime scene of Goku fighting a red dragon",
+        model="FLUX_2_TURBO",
+        dimension="16:9",
+        token=token,
+    )
+    for u in urls:
+        print("Immagine:", u)
+''', language="python")
+
+
+    # ═══ 5. INTEGRAZIONE COMPLETA ═══
+    st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
+    st.markdown("""
+    <div class="api-block">
+        <div class="api-title">
+            <span style="font-size: 18px; font-weight: 700;">Pipeline completa · Tutto insieme</span>
+        </div>
+        <div class="api-desc">
+            Esempio end-to-end che combina <strong>upload riferimento + enhance AI + generazione</strong>.
+            Copia questo script per replicare il 100% delle funzionalità di Nitro nel tuo codice.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.code('''"""
+NITRO PIPELINE COMPLETA
+Requisiti: pip install requests
+"""
+import requests, re, time, base64, json, random, string
+
+# ══ CONFIG ══
+FB_KEY = "AIzaSyACc5e0U4DUwjdve3X4Odyjb8CNcL37Qgs"
+FILES = "https://808files.elmarciun.workers.dev"
+LLM   = "https://elmarcito-nvidia.hf.space/v1/chat"
+MAIL  = "https://mail808.elmarciun.workers.dev"
+API   = "https://wl-api-web-prod.davinci.ai"
+FS    = "https://firestore.googleapis.com/v1/projects/davinciweb-b8892/databases/(default)/documents"
+
+HEADERS = {
+    "origin": "https://davinci.ai", "referer": "https://davinci.ai/",
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0) Chrome/131.0",
+}
+
+# ══ 1. UPLOAD REFERENCE IMAGE ══
+def upload(file_path):
+    token = requests.post(f"{FILES}/api/token").json()["token"]
+    with open(file_path, "rb") as f:
+        u = requests.post("https://upload.gofile.io/uploadfile",
+            data={"token": token}, files={"file": f}).json()["data"]
+    r = requests.post(f"{FILES}/api/register", json={
+        "token": token, "id": u["id"],
+        "server": u.get("servers", ["store1"])[0],
+        "filename": u["name"], "folder_id": u["parentFolder"],
+        "folder_code": u.get("parentFolderCode"),
+        "download_page": u["downloadPage"],
+        "size": u["size"], "mimetype": u.get("mimetype", "image/jpeg")
+    }).json()
+    return r["stream"]
+
+# ══ 2. ENHANCE PROMPT CON AI ══
+def enhance(prompt_it, has_reference=False):
+    system = """Sei un esperto di prompt per AI generative di immagini.
+Traduci in inglese, aggiungi dettagli cinematografici, mantieni TUTTI i soggetti.
+Rispondi SOLO con il prompt inglese finale."""
+    if has_reference:
+        system += "\\nUsa 'this person' o 'this face' per riferirti all'immagine allegata."
+    r = requests.post(LLM, json={
+        "message": prompt_it,
+        "model": "meta/llama-3.3-70b-instruct",
+        "system": system,
+    }, timeout=60).json()
+    for k in ("response", "message", "content", "text"):
+        if r.get(k): return r[k].strip().strip('"')
+    return prompt_it
+
+# ══ 3. SIGNUP DAVINCI (25 crediti gratis) ══
+def signup():
+    email = requests.get(f"{MAIL}/genera?tipi=dotGmail&semplice=1").text.strip()
+    pw = "".join(random.choices(string.ascii_letters+string.digits, k=14)) + "!"
+    h_fb = {**HEADERS, "content-type": "application/json",
+            "x-firebase-gmpid": "1:378221804375:web:32bf22971597e5ef92dc12",
+            "x-client-version": "Chrome/JsCore/11.10.0/FirebaseCore-web"}
+    requests.post(f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={FB_KEY}",
+        headers=h_fb, json={"returnSecureToken": True, "email": email,
+        "password": pw, "clientType": "CLIENT_TYPE_WEB"}).json()
+    requests.post(f"{API}/email-verification-send",
+        headers={"content-type":"application/json"}, json={"email": email})
+    otp = None
+    for _ in range(30):
+        time.sleep(3)
+        r = requests.get(f"{MAIL}/attendi/{email}",
+            params={"mittente":"davinci","codice":1,"semplice":1,"timeout":10000})
+        m = re.search(r"\\b(\\d{6})\\b", r.text)
+        if m: otp = m.group(1); break
+    requests.post(f"{API}/email-verification-verify-code",
+        headers={"content-type":"application/json"}, json={"email": email, "code": otp})
+    d = requests.post(f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FB_KEY}",
+        headers=h_fb, json={"returnSecureToken": True, "email": email,
+        "password": pw, "clientType": "CLIENT_TYPE_WEB"}).json()
+    return d["idToken"]
+
+# ══ 4. GENERA IMMAGINE ══
+def generate(prompt, model="NANO_BANANA_PRO", dim="16:9",
+             token=None, reference_url=None):
+    if not token: token = signup()
+    uid = json.loads(base64.urlsafe_b64decode(
+        token.split(".")[1] + "=="))["user_id"]
+    ah = {**HEADERS, "content-type": "application/json",
+          "x-platform": "web", "x-token": token}
+    payload = {"prompt": prompt, "model": model, "dimension": dim,
+               "artStyleId": 0, "imageCount": 1}
+    if reference_url:
+        payload["referenceImages"] = [reference_url]
+        payload["referenceImage"] = reference_url
+    r = requests.post(f"{API}/process/txt-image", json=payload, headers=ah).json()
+    pid = r.get("processId") or (r.get("data") or [{}])[0].get("processId")
+    for _ in range(150):
+        time.sleep(2)
+        rr = requests.get(f"{FS}/users/{uid}/processes/{pid}",
+            headers={"authorization": f"Bearer {token}"})
+        if rr.status_code != 200: continue
+        f = rr.json().get("fields", {})
+        s = (f.get("status", {}).get("stringValue") or "").upper()
+        if s in ("COMPLETED","SUCCESS","DONE"):
+            urls = []
+            for k in ("outputs","images","results"):
+                for item in f.get(k, {}).get("arrayValue", {}).get("values", []):
+                    v = item.get("stringValue", "")
+                    if v.startswith("http"): urls.append(v)
+            return urls
+        if s in ("FAILED","ERROR"): raise RuntimeError(f"Failed: {s}")
+    raise TimeoutError()
+
+# ══════ USO ══════
+if __name__ == "__main__":
+    # 1. Upload foto di riferimento
+    ref_url = upload("mia_foto.jpg")
+    print("Riferimento caricato:", ref_url)
+
+    # 2. Migliora il prompt con AI
+    enhanced = enhance("metti il mio viso su uno yacht a mykonos", has_reference=True)
+    print("Prompt migliorato:", enhanced)
+
+    # 3. Genera immagine
+    token = signup()
+    urls = generate(enhanced, model="NANO_BANANA_PRO", dim="16:9",
+                    token=token, reference_url=ref_url)
+    for u in urls:
+        print("Immagine generata:", u)
 ''', language="python")
 
     st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
     st.markdown("""
     <div style="text-align: center; padding: 20px; color: var(--text-3); font-size: 12px;">
-        Nitro API v1 · powered by 808files storage & Nvidia NIM · docs by @elmarciun
+        Nitro Pipeline · powered by <code>808files</code> · <code>mail808</code> · <code>nvidia-nim</code> · docs by @elmarciun
     </div>
     """, unsafe_allow_html=True)
