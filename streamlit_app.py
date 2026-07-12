@@ -7,7 +7,6 @@ import httpx
 import streamlit as st
 from PIL import Image
 
-# ═══════════════════════════════════════════════════════════
 FB_KEY = "AIzaSyACc5e0U4DUwjdve3X4Odyjb8CNcL37Qgs"
 FB_GMPID = "1:378221804375:web:32bf22971597e5ef92dc12"
 FB_SU  = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={FB_KEY}"
@@ -18,6 +17,7 @@ API    = "https://wl-api-web-prod.davinci.ai"
 CMS    = "https://wl-cms-web-prod.davinci.ai"
 PAY    = "https://payment.davinci.ai/api/v1/auth"
 FS_BASE = "https://firestore.googleapis.com/v1/projects/davinciweb-b8892/databases/(default)/documents"
+FB_BUCKET = "davinciweb-b8892.firebasestorage.app"
 MAIL   = "https://mail808.elmarciun.workers.dev"
 
 SD = Path(__file__).parent.resolve()
@@ -45,25 +45,17 @@ DIM_ALIAS = {
     "21:9": ["21:9"], "4:5": ["4:5"], "5:4": ["5:4"],
     "2:3": ["2:3"], "3:2": ["3:2"], "auto": ["auto"],
 }
-
 DIM_LABEL = {
-    "1:1": "Quadrato (1:1)",
-    "16:9": "Orizzontale (16:9)",
-    "9:16": "Verticale (9:16)",
-    "4:3": "Classico (4:3)",
-    "3:4": "Ritratto (3:4)",
-    "21:9": "Ultra-wide (21:9)",
-    "4:5": "Social (4:5)",
-    "5:4": "Foto (5:4)",
-    "2:3": "Poster (2:3)",
-    "3:2": "Fotocamera (3:2)",
+    "1:1": "Quadrato (1:1)", "16:9": "Orizzontale (16:9)",
+    "9:16": "Verticale (9:16)", "4:3": "Classico (4:3)",
+    "3:4": "Ritratto (3:4)", "21:9": "Ultra-wide (21:9)",
+    "4:5": "Social (4:5)", "5:4": "Foto (5:4)",
+    "2:3": "Poster (2:3)", "3:2": "Fotocamera (3:2)",
     "auto": "Automatico",
 }
-
 _OTP_RE = re.compile(r"\b(\d{6})\b")
 _PWC = string.ascii_letters + string.digits + "!@#$%"
 
-# ═══════════ HTTP ═══════════
 def _client(timeout=30):
     return httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=15.0),
                              follow_redirects=True, headers=H_BASE)
@@ -81,7 +73,6 @@ async def _get(c, url, headers=None, params=None):
     try: return r.status_code, (r.json() if r.text else {})
     except: return r.status_code, {}
 
-# ═══════════ MAIL ═══════════
 async def gen_email(c):
     for _ in range(3):
         try:
@@ -121,7 +112,6 @@ def rand_pw(n=14):
          random.choice(string.digits), random.choice("!@#$%")]
     c += random.choices(_PWC, k=n-4); random.shuffle(c); return "".join(c)
 
-# ═══════════ SIGNUP ═══════════
 async def signup_one():
     async with _client(timeout=45) as c:
         email = await gen_email(c)
@@ -152,18 +142,68 @@ async def signup_one():
                 "id_token": id_token, "refresh_token": refresh_token, "credits": 25,
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
-# ═══════════ IMAGE UPLOAD ═══════════
-async def upload_image_get_url(image_bytes: bytes, filename: str, token: str) -> Optional[str]:
-    """Upload immagine e ritorna URL pubblico. Prova diversi endpoint noti."""
-    # Prova endpoint di upload standard
-    async with _client(timeout=60) as c:
-        # Fallback: usa data URI se non abbiamo un endpoint
-        # Determina il MIME
-        ext = filename.lower().split(".")[-1] if "." in filename else "png"
-        mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
-                "webp": "image/webp", "gif": "image/gif"}.get(ext, "image/png")
-        b64 = base64.b64encode(image_bytes).decode("ascii")
-        return f"data:{mime};base64,{b64}"
+# ═══════════ IMAGE UPLOAD (multi-fallback) ═══════════
+async def upload_to_firebase(image_bytes, filename, token, uid):
+    ext = filename.lower().split(".")[-1] if "." in filename else "png"
+    mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+            "webp": "image/webp", "gif": "image/gif"}.get(ext, "image/png")
+    ts = int(time.time() * 1000)
+    rand_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=16))
+    obj_name = f"users/{uid}/uploads/{ts}_{rand_id}.{ext}"
+    obj_encoded = obj_name.replace("/", "%2F")
+    url = f"https://firebasestorage.googleapis.com/v0/b/{FB_BUCKET}/o?name={obj_encoded}"
+    async with httpx.AsyncClient(timeout=90) as c:
+        try:
+            r = await c.post(url, content=image_bytes,
+                headers={"content-type": mime,
+                         "authorization": f"Firebase {token}",
+                         "x-goog-upload-protocol": "raw",
+                         "origin": "https://davinci.ai",
+                         "referer": "https://davinci.ai/",
+                         "user-agent": UA})
+            if r.status_code in (200, 201):
+                data = r.json()
+                dl_token = data.get("downloadTokens", "")
+                if dl_token:
+                    return f"https://firebasestorage.googleapis.com/v0/b/{FB_BUCKET}/o/{obj_encoded}?alt=media&token={dl_token}"
+        except Exception as e:
+            print(f"[firebase upload] {e}")
+    return None
+
+async def upload_to_catbox(image_bytes, filename):
+    try:
+        async with httpx.AsyncClient(timeout=60) as c:
+            files = {"fileToUpload": (filename, image_bytes, "application/octet-stream")}
+            data = {"reqtype": "fileupload"}
+            r = await c.post("https://catbox.moe/user/api.php", files=files, data=data,
+                           headers={"user-agent": UA})
+            if r.status_code == 200 and r.text.startswith("http"):
+                return r.text.strip()
+    except Exception as e:
+        print(f"[catbox] {e}")
+    return None
+
+async def upload_to_0x0(image_bytes, filename):
+    try:
+        async with httpx.AsyncClient(timeout=60) as c:
+            files = {"file": (filename, image_bytes)}
+            r = await c.post("https://0x0.st", files=files,
+                           headers={"user-agent": "curl/8.0.0"})
+            if r.status_code == 200 and r.text.startswith("http"):
+                return r.text.strip()
+    except Exception as e:
+        print(f"[0x0] {e}")
+    return None
+
+async def upload_image_to_url(image_bytes, filename, token="", uid=""):
+    if token and uid:
+        url = await upload_to_firebase(image_bytes, filename, token, uid)
+        if url: return url
+    url = await upload_to_catbox(image_bytes, filename)
+    if url: return url
+    url = await upload_to_0x0(image_bytes, filename)
+    if url: return url
+    return None
 
 # ═══════════ MODELS ═══════════
 _MODELS: Optional[list] = None
@@ -389,7 +429,8 @@ class Result:
     credits_used: int = 0
 
 async def do_generate(prompt, model_key, dimension="1:1", count=1,
-                      reference_urls=None, art_style_id=0, progress_state=None):
+                      reference_urls=None, reference_bytes=None, reference_filename=None,
+                      art_style_id=0, progress_state=None):
     models = await fetch_models()
     m = find_model(models, model_key)
     if not m: raise RuntimeError(f"Modello '{model_key}' non trovato")
@@ -397,17 +438,29 @@ async def do_generate(prompt, model_key, dimension="1:1", count=1,
 
     if progress_state:
         progress_state["phase"] = "account"
-        progress_state["est_time"] = _mtime(m) + 3
+        progress_state["est_time"] = _mtime(m) + (25 if reference_bytes else 15)
 
     acc = await auto_pick_account(need, progress_state=progress_state)
     tok = await _ensure_tok(acc); uid = _uid(tok)
     if not uid: raise RuntimeError("Sessione non valida")
 
+    # Upload immagine di riferimento se fornita come bytes
+    final_ref_urls = list(reference_urls) if reference_urls else []
+    if reference_bytes:
+        if progress_state: progress_state["phase"] = "upload"
+        uploaded_url = await upload_image_to_url(
+            reference_bytes, reference_filename or "reference.png",
+            token=tok, uid=uid)
+        if not uploaded_url:
+            raise RuntimeError("Impossibile caricare l'immagine di riferimento")
+        final_ref_urls.insert(0, uploaded_url)
+
     if progress_state: progress_state["phase"] = "submit"
     t0 = time.perf_counter()
-    async with _client(timeout=45) as c:
+    async with _client(timeout=60) as c:
         ah = {**H_JSON, "x-platform": "web", "x-token": tok}
-        payload = _build_payload(m, prompt, dim, count, art_style_id, ref_urls=reference_urls)
+        payload = _build_payload(m, prompt, dim, count, art_style_id,
+                                  ref_urls=final_ref_urls if final_ref_urls else None)
         resp = await _post(c, f"{API}/process/txt-image", payload, ah)
         pid = _pid(resp)
         if not pid: raise RuntimeError(f"Impossibile creare job: {resp}")
@@ -443,69 +496,41 @@ def run(coro):
 # ═══════════════════════════════════════════════════════════════════
 st.set_page_config(page_title="Nitro", layout="wide", initial_sidebar_state="collapsed")
 
-if "theme" not in st.session_state:
-    st.session_state.theme = "dark"
-
+if "theme" not in st.session_state: st.session_state.theme = "dark"
 THEME = st.session_state.theme
 
-# ═══ DARK: viola/indigo vibrante  ·  LIGHT: bianco ChatGPT ═══
 if THEME == "dark":
     C = {
-        "bg":        "#0a0618",
-        "bg_2":      "#141028",
-        "bg_3":      "#1c1638",
-        "surface":   "#1a1435",
-        "surface_h": "#241d47",
-        "border":    "rgba(139, 92, 246, 0.18)",
-        "border_h":  "rgba(139, 92, 246, 0.45)",
-        "text":      "#f5f3ff",
-        "text_2":    "#c4b5fd",
-        "text_3":    "#8b7cc8",
-        "accent":    "#a855f7",
-        "accent_2":  "#8b5cf6",
-        "accent_3":  "#ec4899",
-        "accent_h":  "#c084fc",
-        "danger":    "#f87171",
-        "success":   "#4ade80",
-        "input_bg":  "#100b24",
-        "shadow":    "0 10px 40px rgba(139, 92, 246, 0.15)",
-        "glow":      "0 0 60px rgba(168, 85, 247, 0.25)",
-        "hero_bg":   "linear-gradient(135deg, #1a0f3d 0%, #2d1b5e 50%, #4c1d95 100%)",
-        "btn_bg":    "linear-gradient(135deg, #8b5cf6 0%, #a855f7 50%, #ec4899 100%)",
-        "btn_h":     "linear-gradient(135deg, #a855f7 0%, #c084fc 50%, #f472b6 100%)",
-        "prog_bg":   "linear-gradient(90deg, #8b5cf6, #a855f7, #ec4899, #a855f7, #8b5cf6)",
+        "bg": "#0a0618", "bg_2": "#141028", "bg_3": "#1c1638",
+        "surface": "#1a1435", "surface_h": "#241d47",
+        "border": "rgba(139, 92, 246, 0.18)", "border_h": "rgba(139, 92, 246, 0.45)",
+        "text": "#f5f3ff", "text_2": "#c4b5fd", "text_3": "#8b7cc8",
+        "accent": "#a855f7", "accent_2": "#8b5cf6", "accent_3": "#ec4899",
+        "accent_h": "#c084fc", "danger": "#f87171", "success": "#4ade80",
+        "input_bg": "#100b24",
+        "shadow": "0 10px 40px rgba(139, 92, 246, 0.15)",
+        "glow": "0 0 60px rgba(168, 85, 247, 0.25)",
+        "btn_bg": "linear-gradient(135deg, #8b5cf6 0%, #a855f7 50%, #ec4899 100%)",
+        "btn_h": "linear-gradient(135deg, #a855f7 0%, #c084fc 50%, #f472b6 100%)",
+        "prog_bg": "linear-gradient(90deg, #8b5cf6, #a855f7, #ec4899, #a855f7, #8b5cf6)",
     }
 else:
     C = {
-        "bg":        "#ffffff",
-        "bg_2":      "#f7f7f8",
-        "bg_3":      "#ececec",
-        "surface":   "#ffffff",
-        "surface_h": "#f7f7f8",
-        "border":    "#e5e5e5",
-        "border_h":  "#d0d0d0",
-        "text":      "#0d0d0d",
-        "text_2":    "#5d5d5d",
-        "text_3":    "#8e8e8e",
-        "accent":    "#10a37f",
-        "accent_2":  "#10a37f",
-        "accent_3":  "#10a37f",
-        "accent_h":  "#0d8968",
-        "danger":    "#ef4444",
-        "success":   "#10a37f",
-        "input_bg":  "#ffffff",
-        "shadow":    "0 2px 12px rgba(0, 0, 0, 0.06)",
-        "glow":      "none",
-        "hero_bg":   "linear-gradient(135deg, #f7f7f8 0%, #ececec 100%)",
-        "btn_bg":    "#10a37f",
-        "btn_h":     "#0d8968",
-        "prog_bg":   "linear-gradient(90deg, #10a37f 0%, #14c19a 50%, #10a37f 100%)",
+        "bg": "#ffffff", "bg_2": "#f7f7f8", "bg_3": "#ececec",
+        "surface": "#ffffff", "surface_h": "#f7f7f8",
+        "border": "#e5e5e5", "border_h": "#d0d0d0",
+        "text": "#0d0d0d", "text_2": "#5d5d5d", "text_3": "#8e8e8e",
+        "accent": "#10a37f", "accent_2": "#10a37f", "accent_3": "#10a37f",
+        "accent_h": "#0d8968", "danger": "#ef4444", "success": "#10a37f",
+        "input_bg": "#ffffff",
+        "shadow": "0 2px 12px rgba(0, 0, 0, 0.06)", "glow": "none",
+        "btn_bg": "#10a37f", "btn_h": "#0d8968",
+        "prog_bg": "linear-gradient(90deg, #10a37f 0%, #14c19a 50%, #10a37f 100%)",
     }
 
 st.markdown(f"""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
-    
     :root {{
         --bg: {C['bg']}; --bg-2: {C['bg_2']}; --bg-3: {C['bg_3']};
         --surface: {C['surface']}; --surface-h: {C['surface_h']};
@@ -517,606 +542,224 @@ st.markdown(f"""
         --input-bg: {C['input_bg']};
         --shadow: {C['shadow']}; --glow: {C['glow']};
     }}
-    
     * {{ box-sizing: border-box; }}
-    
     html, body, [class*="css"], .stApp {{
         font-family: 'Inter', -apple-system, sans-serif !important;
         color: var(--text) !important;
     }}
-    
     .stApp {{
         background: var(--bg) !important;
         {"background-image: radial-gradient(ellipse 80% 50% at 20% 10%, rgba(139, 92, 246, 0.15), transparent), radial-gradient(ellipse 60% 40% at 80% 30%, rgba(168, 85, 247, 0.12), transparent), radial-gradient(ellipse 70% 45% at 50% 90%, rgba(236, 72, 153, 0.08), transparent) !important; background-attachment: fixed !important;" if THEME == "dark" else ""}
     }}
-    
     #MainMenu, footer, header {{ visibility: hidden; }}
-    .block-container {{
-        padding: 1.5rem 2rem 3rem !important;
-        max-width: 1200px !important;
-    }}
-    
-    /* ═══ NAVBAR ═══ */
-    .nav {{
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 14px 22px;
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 16px;
-        margin-bottom: 20px;
+    .block-container {{ padding: 1.5rem 2rem 3rem !important; max-width: 1200px !important; }}
+    .nav {{ display: flex; align-items: center; justify-content: space-between;
+        padding: 14px 22px; background: var(--surface); border: 1px solid var(--border);
+        border-radius: 16px; margin-bottom: 20px;
         {"box-shadow: var(--glow);" if THEME == "dark" else "box-shadow: var(--shadow);"}
     }}
-    .logo {{
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        font-size: 18px;
-        font-weight: 700;
-        color: var(--text);
-        letter-spacing: -0.3px;
-    }}
-    .logo-dot {{
-        width: 32px; height: 32px;
-        background: {C['btn_bg']};
-        border-radius: 10px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: white;
-        font-weight: 700;
-        font-size: 15px;
-        font-family: 'JetBrains Mono', monospace;
+    .logo {{ display: flex; align-items: center; gap: 12px; font-size: 18px;
+        font-weight: 700; color: var(--text); letter-spacing: -0.3px; }}
+    .logo-dot {{ width: 32px; height: 32px; background: {C['btn_bg']};
+        border-radius: 10px; display: flex; align-items: center; justify-content: center;
+        color: white; font-weight: 700; font-size: 15px; font-family: 'JetBrains Mono', monospace;
         {"box-shadow: 0 4px 16px rgba(168, 85, 247, 0.4);" if THEME == "dark" else ""}
     }}
-    .badge {{
-        background: var(--bg-2);
-        color: var(--text-2);
-        padding: 3px 9px;
-        border-radius: 8px;
-        font-size: 10px;
-        font-weight: 600;
-        letter-spacing: 0.5px;
-        margin-left: 4px;
-        border: 1px solid var(--border);
-    }}
-    
-    /* Theme button (Streamlit) */
-    div[data-testid="stButton"][data-baseweb="button"]:has(button[kind="secondary"]) button,
+    .badge {{ background: var(--bg-2); color: var(--text-2); padding: 3px 9px;
+        border-radius: 8px; font-size: 10px; font-weight: 600; letter-spacing: 0.5px;
+        margin-left: 4px; border: 1px solid var(--border); }}
     div[data-testid="stButton"]:has(button[kind="secondary"]) button {{
-        background: var(--surface) !important;
-        color: var(--text) !important;
-        border: 1px solid var(--border) !important;
-        padding: 8px 16px !important;
-        font-size: 13px !important;
-        font-weight: 500 !important;
-        text-transform: none !important;
-        letter-spacing: 0 !important;
-        border-radius: 100px !important;
-        box-shadow: none !important;
+        background: var(--surface) !important; color: var(--text) !important;
+        border: 1px solid var(--border) !important; padding: 8px 16px !important;
+        font-size: 13px !important; font-weight: 500 !important; text-transform: none !important;
+        letter-spacing: 0 !important; border-radius: 100px !important; box-shadow: none !important;
         min-height: 38px !important;
     }}
     div[data-testid="stButton"]:has(button[kind="secondary"]) button:hover {{
-        background: var(--surface-h) !important;
-        border-color: var(--border-h) !important;
+        background: var(--surface-h) !important; border-color: var(--border-h) !important;
         transform: none !important;
     }}
-    
-    /* ═══ TABS ═══ */
-    .stTabs [data-baseweb="tab-list"] {{
-        gap: 4px;
-        background: var(--bg-2);
-        padding: 5px;
-        border-radius: 100px;
-        border: 1px solid var(--border);
-        width: fit-content;
-        margin: 0 auto 24px auto;
-    }}
-    .stTabs [data-baseweb="tab"] {{
-        background: transparent;
-        color: var(--text-2);
-        border-radius: 100px;
-        padding: 9px 24px;
-        font-weight: 500;
-        font-size: 13px;
-        letter-spacing: 0;
-        text-transform: none;
-        font-family: 'Inter', sans-serif !important;
-        transition: all 0.2s ease;
-        border: none !important;
-    }}
+    .stTabs [data-baseweb="tab-list"] {{ gap: 4px; background: var(--bg-2);
+        padding: 5px; border-radius: 100px; border: 1px solid var(--border);
+        width: fit-content; margin: 0 auto 24px auto; }}
+    .stTabs [data-baseweb="tab"] {{ background: transparent; color: var(--text-2);
+        border-radius: 100px; padding: 9px 24px; font-weight: 500; font-size: 13px;
+        letter-spacing: 0; text-transform: none; font-family: 'Inter', sans-serif !important;
+        transition: all 0.2s ease; border: none !important; }}
     .stTabs [data-baseweb="tab"]:hover {{ color: var(--text); }}
     .stTabs [aria-selected="true"] {{
         background: {C['btn_bg'] if THEME == "dark" else "var(--surface)"} !important;
         color: {"white" if THEME == "dark" else "var(--text)"} !important;
         box-shadow: {"0 4px 20px rgba(168, 85, 247, 0.4)" if THEME == "dark" else "var(--shadow)"};
     }}
-    .stTabs [data-baseweb="tab-highlight"] {{ display: none !important; }}
-    .stTabs [data-baseweb="tab-border"] {{ display: none !important; }}
-    
-    /* ═══ LABEL ═══ */
-    .sec-label {{
-        color: var(--text) !important;
-        font-size: 14px;
-        font-weight: 600;
-        margin: 20px 0 10px 0;
-    }}
-    
-    /* ═══ INPUTS ═══ */
-    .stTextArea textarea {{
-        background: var(--input-bg) !important;
-        border: 1px solid var(--border) !important;
-        color: var(--text) !important;
-        font-family: 'Inter', sans-serif !important;
-        font-size: 15px !important;
-        border-radius: 20px !important;
-        padding: 16px 20px !important;
-        transition: all 0.2s !important;
-        resize: none !important;
-        box-shadow: var(--shadow);
-    }}
-    .stTextArea textarea:focus {{
-        border-color: var(--accent) !important;
-        box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.15) !important;
-        outline: none !important;
-    }}
-    .stTextArea textarea::placeholder {{ 
-        color: var(--text-3) !important;
-        opacity: 1 !important;
-    }}
-    
-    .stTextInput input {{
-        background: var(--input-bg) !important;
-        border: 1px solid var(--border) !important;
-        color: var(--text) !important;
-        font-family: 'Inter', sans-serif !important;
-        font-size: 14px !important;
-        border-radius: 100px !important;
-        padding: 10px 20px !important;
-        height: 44px !important;
-    }}
-    .stTextInput input:focus {{
-        border-color: var(--accent) !important;
-        box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.15) !important;
-        outline: none !important;
-    }}
+    .stTabs [data-baseweb="tab-highlight"], .stTabs [data-baseweb="tab-border"] {{ display: none !important; }}
+    .sec-label {{ color: var(--text) !important; font-size: 14px; font-weight: 600; margin: 20px 0 10px 0; }}
+    .stTextArea textarea {{ background: var(--input-bg) !important; border: 1px solid var(--border) !important;
+        color: var(--text) !important; font-family: 'Inter', sans-serif !important;
+        font-size: 15px !important; border-radius: 20px !important; padding: 16px 20px !important;
+        transition: all 0.2s !important; resize: none !important; box-shadow: var(--shadow); }}
+    .stTextArea textarea:focus {{ border-color: var(--accent) !important;
+        box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.15) !important; outline: none !important; }}
+    .stTextArea textarea::placeholder {{ color: var(--text-3) !important; opacity: 1 !important; }}
+    .stTextInput input {{ background: var(--input-bg) !important; border: 1px solid var(--border) !important;
+        color: var(--text) !important; font-family: 'Inter', sans-serif !important;
+        font-size: 14px !important; border-radius: 100px !important; padding: 10px 20px !important;
+        height: 44px !important; }}
+    .stTextInput input:focus {{ border-color: var(--accent) !important;
+        box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.15) !important; outline: none !important; }}
     .stTextInput input::placeholder {{ color: var(--text-3) !important; }}
-    
-    /* Selectbox */
-    .stSelectbox > div > div {{
-        background: var(--input-bg) !important;
-        border: 1px solid var(--border) !important;
-        border-radius: 14px !important;
-        color: var(--text) !important;
-        min-height: 44px !important;
-    }}
+    .stSelectbox > div > div {{ background: var(--input-bg) !important;
+        border: 1px solid var(--border) !important; border-radius: 14px !important;
+        color: var(--text) !important; min-height: 44px !important; }}
     .stSelectbox > div > div:hover {{ border-color: var(--border-h) !important; }}
-    .stSelectbox [data-baseweb="select"] > div {{
-        background: transparent !important;
-        color: var(--text) !important;
-        font-family: 'Inter', sans-serif !important;
-    }}
+    .stSelectbox [data-baseweb="select"] > div {{ background: transparent !important;
+        color: var(--text) !important; font-family: 'Inter', sans-serif !important; }}
     .stSelectbox [data-baseweb="select"] span,
-    .stSelectbox [data-baseweb="select"] input {{
-        color: var(--text) !important;
-    }}
-    
-    /* Dropdown menu */
-    [data-baseweb="popover"] > div {{
-        background: var(--surface) !important;
-        border: 1px solid var(--border) !important;
-        border-radius: 14px !important;
-        box-shadow: var(--shadow), var(--glow) !important;
-        overflow: hidden !important;
-    }}
-    [data-baseweb="menu"] {{
-        background: var(--surface) !important;
-    }}
-    [data-baseweb="menu"] li {{
-        color: var(--text) !important;
-        font-family: 'Inter', sans-serif !important;
-        font-size: 14px !important;
-        padding: 12px 16px !important;
-        background: var(--surface) !important;
-    }}
-    [data-baseweb="menu"] li:hover {{ 
-        background: var(--surface-h) !important;
-        color: var(--text) !important;
-    }}
+    .stSelectbox [data-baseweb="select"] input {{ color: var(--text) !important; }}
+    [data-baseweb="popover"] > div {{ background: var(--surface) !important;
+        border: 1px solid var(--border) !important; border-radius: 14px !important;
+        box-shadow: var(--shadow), var(--glow) !important; overflow: hidden !important; }}
+    [data-baseweb="menu"] {{ background: var(--surface) !important; }}
+    [data-baseweb="menu"] li {{ color: var(--text) !important;
+        font-family: 'Inter', sans-serif !important; font-size: 14px !important;
+        padding: 12px 16px !important; background: var(--surface) !important; }}
+    [data-baseweb="menu"] li:hover {{ background: var(--surface-h) !important; color: var(--text) !important; }}
     [data-baseweb="menu"] li[aria-selected="true"] {{
         background: {"rgba(168, 85, 247, 0.15)" if THEME == "dark" else "var(--surface-h)"} !important;
-        color: var(--text) !important;
-    }}
-    
-    /* Number input */
-    .stNumberInput > div > div {{
-        background: var(--input-bg) !important;
-        border: 1px solid var(--border) !important;
-        border-radius: 14px !important;
-        min-height: 44px !important;
-    }}
-    .stNumberInput input {{
-        background: transparent !important;
-        color: var(--text) !important;
-        font-family: 'Inter', sans-serif !important;
-    }}
-    .stNumberInput button {{
-        background: transparent !important;
-        color: var(--text-2) !important;
-        border: none !important;
-    }}
-    .stNumberInput button:hover {{
-        background: var(--surface-h) !important;
-        color: var(--text) !important;
-    }}
-    
-    /* Labels */
+        color: var(--text) !important; }}
+    .stNumberInput > div > div {{ background: var(--input-bg) !important;
+        border: 1px solid var(--border) !important; border-radius: 14px !important;
+        min-height: 44px !important; }}
+    .stNumberInput input {{ background: transparent !important; color: var(--text) !important;
+        font-family: 'Inter', sans-serif !important; }}
+    .stNumberInput button {{ background: transparent !important; color: var(--text-2) !important; border: none !important; }}
+    .stNumberInput button:hover {{ background: var(--surface-h) !important; color: var(--text) !important; }}
     .stTextArea label, .stTextInput label, .stSelectbox label, .stNumberInput label,
-    .stFileUploader label {{
-        color: var(--text) !important;
-        font-size: 14px !important;
-        font-weight: 600 !important;
-        font-family: 'Inter', sans-serif !important;
-    }}
-    
-    /* ═══ FILE UPLOADER (Drag & Drop) ═══ */
-    [data-testid="stFileUploader"] {{
-        background: transparent !important;
-    }}
-    [data-testid="stFileUploader"] section {{
-        background: var(--input-bg) !important;
-        border: 2px dashed var(--border) !important;
-        border-radius: 20px !important;
-        padding: 24px !important;
-        transition: all 0.2s !important;
-    }}
-    [data-testid="stFileUploader"] section:hover {{
-        border-color: var(--accent) !important;
-        background: var(--surface-h) !important;
-    }}
-    [data-testid="stFileUploader"] section > div {{
-        color: var(--text-2) !important;
-    }}
-    [data-testid="stFileUploader"] section small {{
-        color: var(--text-3) !important;
-    }}
-    [data-testid="stFileUploader"] button {{
-        background: var(--surface) !important;
-        color: var(--text) !important;
-        border: 1px solid var(--border) !important;
-        border-radius: 100px !important;
-        font-weight: 500 !important;
-        font-size: 13px !important;
-        padding: 8px 20px !important;
-    }}
-    [data-testid="stFileUploader"] button:hover {{
-        background: var(--surface-h) !important;
-        border-color: var(--accent) !important;
-    }}
-    [data-testid="stFileUploaderFile"] {{
-        background: var(--surface) !important;
-        border: 1px solid var(--border) !important;
-        border-radius: 12px !important;
-        padding: 8px 12px !important;
-    }}
-    [data-testid="stFileUploaderFile"] small,
-    [data-testid="stFileUploaderFile"] div {{
-        color: var(--text) !important;
-    }}
-    
-    /* ═══ PRIMARY BUTTON ═══ */
+    .stFileUploader label {{ color: var(--text) !important; font-size: 14px !important;
+        font-weight: 600 !important; font-family: 'Inter', sans-serif !important; }}
+    [data-testid="stFileUploader"] {{ background: transparent !important; }}
+    [data-testid="stFileUploader"] section {{ background: var(--input-bg) !important;
+        border: 2px dashed var(--border) !important; border-radius: 20px !important;
+        padding: 24px !important; transition: all 0.2s !important; }}
+    [data-testid="stFileUploader"] section:hover {{ border-color: var(--accent) !important;
+        background: var(--surface-h) !important; }}
+    [data-testid="stFileUploader"] section > div {{ color: var(--text-2) !important; }}
+    [data-testid="stFileUploader"] section small {{ color: var(--text-3) !important; }}
+    [data-testid="stFileUploader"] button {{ background: var(--surface) !important;
+        color: var(--text) !important; border: 1px solid var(--border) !important;
+        border-radius: 100px !important; font-weight: 500 !important; font-size: 13px !important;
+        padding: 8px 20px !important; }}
+    [data-testid="stFileUploader"] button:hover {{ background: var(--surface-h) !important;
+        border-color: var(--accent) !important; }}
+    [data-testid="stFileUploaderFile"] {{ background: var(--surface) !important;
+        border: 1px solid var(--border) !important; border-radius: 12px !important;
+        padding: 8px 12px !important; }}
+    [data-testid="stFileUploaderFile"] small, [data-testid="stFileUploaderFile"] div {{ color: var(--text) !important; }}
     div[data-testid="stButton"] > button:not([kind="secondary"]) {{
-        background: {C['btn_bg']} !important;
-        color: white !important;
-        border: none !important;
-        font-weight: 600 !important;
-        font-size: 15px !important;
-        letter-spacing: 0 !important;
-        padding: 14px 28px !important;
-        border-radius: 100px !important;
-        text-transform: none !important;
-        font-family: 'Inter', sans-serif !important;
-        transition: all 0.2s !important;
+        background: {C['btn_bg']} !important; color: white !important; border: none !important;
+        font-weight: 600 !important; font-size: 15px !important; letter-spacing: 0 !important;
+        padding: 14px 28px !important; border-radius: 100px !important; text-transform: none !important;
+        font-family: 'Inter', sans-serif !important; transition: all 0.2s !important;
         min-height: 50px !important;
         {"box-shadow: 0 4px 20px rgba(168, 85, 247, 0.35);" if THEME == "dark" else "box-shadow: none;"}
     }}
     div[data-testid="stButton"] > button:not([kind="secondary"]):hover {{
-        background: {C['btn_h']} !important;
-        transform: translateY(-1px) !important;
+        background: {C['btn_h']} !important; transform: translateY(-1px) !important;
         {"box-shadow: 0 8px 30px rgba(168, 85, 247, 0.5);" if THEME == "dark" else "box-shadow: 0 2px 8px rgba(16, 163, 127, 0.25);"}
     }}
-    div[data-testid="stButton"] > button:disabled {{
-        background: var(--bg-3) !important;
-        color: var(--text-3) !important;
-        opacity: 0.6 !important;
-        box-shadow: none !important;
-        transform: none !important;
-    }}
-    
-    /* Download button */
-    .stDownloadButton > button {{
-        background: var(--surface) !important;
-        color: var(--text) !important;
-        border: 1px solid var(--border) !important;
-        border-radius: 100px !important;
-        font-weight: 500 !important;
-        font-size: 13px !important;
-        padding: 10px 20px !important;
-    }}
-    .stDownloadButton > button:hover {{
-        background: var(--surface-h) !important;
-        border-color: var(--accent) !important;
-        color: var(--accent) !important;
-    }}
-    
-    /* ═══ PROGRESS BAR ═══ */
-    .np-wrap {{
-        margin: 16px 0;
-        padding: 22px 26px;
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 20px;
-        box-shadow: var(--shadow);
-    }}
-    .np-head {{
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 14px;
-    }}
-    .np-label {{
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        color: var(--text);
-        font-size: 14px;
-        font-weight: 600;
-    }}
-    .np-spin {{
-        width: 16px; height: 16px;
-        border: 2px solid var(--border);
-        border-top-color: var(--accent);
-        border-right-color: var(--accent-3);
-        border-radius: 50%;
-        animation: spin 0.8s linear infinite;
-    }}
+    div[data-testid="stButton"] > button:disabled {{ background: var(--bg-3) !important;
+        color: var(--text-3) !important; opacity: 0.6 !important; box-shadow: none !important;
+        transform: none !important; }}
+    .stDownloadButton > button {{ background: var(--surface) !important; color: var(--text) !important;
+        border: 1px solid var(--border) !important; border-radius: 100px !important;
+        font-weight: 500 !important; font-size: 13px !important; padding: 10px 20px !important; }}
+    .stDownloadButton > button:hover {{ background: var(--surface-h) !important;
+        border-color: var(--accent) !important; color: var(--accent) !important; }}
+    .np-wrap {{ margin: 16px 0; padding: 22px 26px; background: var(--surface);
+        border: 1px solid var(--border); border-radius: 20px; box-shadow: var(--shadow); }}
+    .np-head {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }}
+    .np-label {{ display: flex; align-items: center; gap: 10px; color: var(--text);
+        font-size: 14px; font-weight: 600; }}
+    .np-spin {{ width: 16px; height: 16px; border: 2px solid var(--border);
+        border-top-color: var(--accent); border-right-color: var(--accent-3);
+        border-radius: 50%; animation: spin 0.8s linear infinite; }}
     @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
-    .np-pct {{
-        font-size: 20px;
-        font-weight: 700;
+    .np-pct {{ font-size: 20px; font-weight: 700;
         {"background: linear-gradient(135deg, var(--accent), var(--accent-3)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;" if THEME == "dark" else "color: var(--accent);"}
-        font-family: 'JetBrains Mono', monospace;
-        letter-spacing: -0.5px;
-        min-width: 90px;
-        text-align: right;
+        font-family: 'JetBrains Mono', monospace; letter-spacing: -0.5px; min-width: 90px; text-align: right;
     }}
-    .np-track {{
-        position: relative;
-        height: 8px;
-        background: var(--bg-3);
-        border-radius: 100px;
-        overflow: hidden;
-    }}
-    .np-fill {{
-        position: absolute;
-        top: 0; left: 0; bottom: 0;
-        background: {C['prog_bg']};
-        background-size: 300% 100%;
-        border-radius: 100px;
-        transition: width 0.1s cubic-bezier(0.4, 0, 0.2, 1);
-        animation: flow 3s linear infinite;
+    .np-track {{ position: relative; height: 8px; background: var(--bg-3);
+        border-radius: 100px; overflow: hidden; }}
+    .np-fill {{ position: absolute; top: 0; left: 0; bottom: 0; background: {C['prog_bg']};
+        background-size: 300% 100%; border-radius: 100px;
+        transition: width 0.1s cubic-bezier(0.4, 0, 0.2, 1); animation: flow 3s linear infinite;
         {"box-shadow: 0 0 20px rgba(168, 85, 247, 0.5);" if THEME == "dark" else ""}
     }}
-    @keyframes flow {{
-        0% {{ background-position: 0% 50%; }}
-        100% {{ background-position: 300% 50%; }}
-    }}
-    .np-fill::after {{
-        content: '';
-        position: absolute;
-        inset: 0;
+    @keyframes flow {{ 0% {{ background-position: 0% 50%; }} 100% {{ background-position: 300% 50%; }} }}
+    .np-fill::after {{ content: ''; position: absolute; inset: 0;
         background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.35) 50%, transparent 100%);
-        animation: shim 1.6s linear infinite;
-    }}
-    @keyframes shim {{
-        0% {{ transform: translateX(-100%); }}
-        100% {{ transform: translateX(100%); }}
-    }}
-    .np-meta {{
-        display: flex;
-        justify-content: space-between;
-        margin-top: 14px;
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 11px;
-        color: var(--text-3);
-    }}
-    .np-phase {{
-        color: var(--accent);
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }}
-    
-    .np-wrap.done {{
-        border-color: var(--success);
+        animation: shim 1.6s linear infinite; }}
+    @keyframes shim {{ 0% {{ transform: translateX(-100%); }} 100% {{ transform: translateX(100%); }} }}
+    .np-meta {{ display: flex; justify-content: space-between; margin-top: 14px;
+        font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-3); }}
+    .np-phase {{ color: var(--accent); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }}
+    .np-wrap.done {{ border-color: var(--success);
         {"background: rgba(74, 222, 128, 0.06);" if THEME == "dark" else "background: rgba(16, 163, 127, 0.04);"}
     }}
     .np-wrap.done .np-label {{ color: var(--success); }}
-    .np-wrap.done .np-pct {{ 
-        color: var(--success);
-        -webkit-text-fill-color: var(--success);
-    }}
-    
-    /* ═══ PLACEHOLDER ═══ */
-    .np-placeholder {{
-        width: 100%;
-        aspect-ratio: 1;
-        max-height: 500px;
-        background: var(--bg-2);
-        border: 2px dashed var(--border);
-        border-radius: 20px;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        gap: 12px;
-        color: var(--text-3);
-        font-size: 14px;
-        font-weight: 500;
-    }}
-    .np-placeholder svg {{
-        opacity: 0.4;
-    }}
-    
-    /* ═══ MODEL CARD ═══ */
-    .mcard {{
-        display: grid;
-        grid-template-columns: 1fr auto;
-        gap: 16px;
-        align-items: center;
-        padding: 18px 22px;
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 16px;
-        margin-bottom: 10px;
-        transition: all 0.2s;
-    }}
-    .mcard:hover {{
-        border-color: var(--border-h);
-        background: var(--surface-h);
-        transform: translateX(4px);
-    }}
-    .mkey {{
-        color: var(--text);
-        font-weight: 700;
-        font-size: 15px;
-        font-family: 'JetBrains Mono', monospace;
-    }}
-    .mname {{
-        color: var(--text-2);
-        font-size: 13px;
-        margin-top: 4px;
-    }}
-    .minfo {{
-        color: var(--text-3);
-        font-size: 11px;
-        margin-top: 4px;
-        font-family: 'JetBrains Mono', monospace;
-    }}
-    .tag {{
-        display: inline-block;
+    .np-wrap.done .np-pct {{ color: var(--success); -webkit-text-fill-color: var(--success); }}
+    .np-placeholder {{ width: 100%; aspect-ratio: 1; max-height: 500px; background: var(--bg-2);
+        border: 2px dashed var(--border); border-radius: 20px; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 12px; color: var(--text-3);
+        font-size: 14px; font-weight: 500; }}
+    .np-placeholder svg {{ opacity: 0.4; }}
+    .mcard {{ display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: center;
+        padding: 18px 22px; background: var(--surface); border: 1px solid var(--border);
+        border-radius: 16px; margin-bottom: 10px; transition: all 0.2s; }}
+    .mcard:hover {{ border-color: var(--border-h); background: var(--surface-h); transform: translateX(4px); }}
+    .mkey {{ color: var(--text); font-weight: 700; font-size: 15px; font-family: 'JetBrains Mono', monospace; }}
+    .mname {{ color: var(--text-2); font-size: 13px; margin-top: 4px; }}
+    .minfo {{ color: var(--text-3); font-size: 11px; margin-top: 4px; font-family: 'JetBrains Mono', monospace; }}
+    .tag {{ display: inline-block;
         background: {"rgba(168, 85, 247, 0.15)" if THEME == "dark" else "var(--bg-2)"};
-        color: var(--accent);
-        padding: 3px 8px;
-        border-radius: 6px;
-        font-size: 9px;
-        font-weight: 700;
-        margin-left: 6px;
-        letter-spacing: 0.5px;
-        border: 1px solid var(--border);
-    }}
+        color: var(--accent); padding: 3px 8px; border-radius: 6px; font-size: 9px;
+        font-weight: 700; margin-left: 6px; letter-spacing: 0.5px; border: 1px solid var(--border); }}
     .mtime {{
         background: {"rgba(168, 85, 247, 0.1)" if THEME == "dark" else "var(--bg-2)"};
-        color: var(--text-2);
-        padding: 6px 14px;
-        border-radius: 100px;
-        font-weight: 600;
-        font-size: 12px;
-        font-family: 'JetBrains Mono', monospace;
-    }}
-    
-    /* ═══ METRICS ═══ */
-    [data-testid="stMetric"] {{
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 16px;
-        padding: 16px 20px;
-    }}
-    [data-testid="stMetricValue"] {{
-        color: var(--text) !important;
-        font-size: 22px !important;
-        font-weight: 700 !important;
-        font-family: 'JetBrains Mono', monospace !important;
-    }}
-    [data-testid="stMetricLabel"] {{
-        color: var(--text-3) !important;
-        font-size: 11px !important;
-        font-weight: 600 !important;
-        text-transform: uppercase !important;
-        letter-spacing: 0.5px !important;
-    }}
-    
-    /* ═══ IMAGE ═══ */
-    .stImage img {{
-        border-radius: 16px;
-        box-shadow: var(--shadow);
-    }}
-    
-    /* ═══ ALERTS ═══ */
-    .stAlert, [data-baseweb="notification"] {{
-        background: var(--surface) !important;
-        border: 1px solid var(--border) !important;
-        border-radius: 14px !important;
-        color: var(--text) !important;
-    }}
-    .stAlert p, .stAlert div, [data-baseweb="notification"] p {{ 
-        color: var(--text) !important; 
-    }}
-    
-    /* Caption */
-    [data-testid="stCaptionContainer"] {{
-        color: var(--text-3) !important;
-        font-size: 12px !important;
-    }}
-    
-    /* Warning/Error/Success text */
-    .stSuccess {{
-        background: {"rgba(74, 222, 128, 0.1)" if THEME == "dark" else "rgba(16, 163, 127, 0.05)"} !important;
-        border-color: var(--success) !important;
-        color: var(--success) !important;
-    }}
-    .stError {{
-        background: {"rgba(248, 113, 113, 0.1)" if THEME == "dark" else "rgba(239, 68, 68, 0.05)"} !important;
-        border-color: var(--danger) !important;
-    }}
-    .stWarning {{
-        background: var(--bg-2) !important;
-        border-color: var(--border) !important;
-        color: var(--text) !important;
-    }}
-    
-    /* Checkbox */
+        color: var(--text-2); padding: 6px 14px; border-radius: 100px; font-weight: 600;
+        font-size: 12px; font-family: 'JetBrains Mono', monospace; }}
+    [data-testid="stMetric"] {{ background: var(--surface); border: 1px solid var(--border);
+        border-radius: 16px; padding: 16px 20px; }}
+    [data-testid="stMetricValue"] {{ color: var(--text) !important; font-size: 22px !important;
+        font-weight: 700 !important; font-family: 'JetBrains Mono', monospace !important; }}
+    [data-testid="stMetricLabel"] {{ color: var(--text-3) !important; font-size: 11px !important;
+        font-weight: 600 !important; text-transform: uppercase !important; letter-spacing: 0.5px !important; }}
+    .stImage img {{ border-radius: 16px; box-shadow: var(--shadow); }}
+    .stAlert, [data-baseweb="notification"] {{ background: var(--surface) !important;
+        border: 1px solid var(--border) !important; border-radius: 14px !important;
+        color: var(--text) !important; }}
+    .stAlert p, .stAlert div, [data-baseweb="notification"] p {{ color: var(--text) !important; }}
+    [data-testid="stCaptionContainer"] {{ color: var(--text-3) !important; font-size: 12px !important; }}
+    .stSuccess {{ background: {"rgba(74, 222, 128, 0.1)" if THEME == "dark" else "rgba(16, 163, 127, 0.05)"} !important;
+        border-color: var(--success) !important; color: var(--success) !important; }}
+    .stError {{ background: {"rgba(248, 113, 113, 0.1)" if THEME == "dark" else "rgba(239, 68, 68, 0.05)"} !important;
+        border-color: var(--danger) !important; }}
+    .stWarning {{ background: var(--bg-2) !important; border-color: var(--border) !important; color: var(--text) !important; }}
     .stCheckbox label {{ color: var(--text) !important; font-size: 13px !important; }}
-    
-    /* Scrollbar */
     ::-webkit-scrollbar {{ width: 10px; height: 10px; }}
     ::-webkit-scrollbar-track {{ background: transparent; }}
-    ::-webkit-scrollbar-thumb {{ 
-        background: var(--border);
-        border-radius: 100px;
-        border: 2px solid var(--bg);
-    }}
+    ::-webkit-scrollbar-thumb {{ background: var(--border); border-radius: 100px; border: 2px solid var(--bg); }}
     ::-webkit-scrollbar-thumb:hover {{ background: var(--accent); }}
-    
-    /* Markdown text */
     .stMarkdown, .stMarkdown p, .stMarkdown span {{ color: var(--text) !important; }}
-    
-    /* Container */
     [data-testid="stVerticalBlock"] {{ gap: 0.5rem; }}
 </style>
 """, unsafe_allow_html=True)
 
-# ═══════════ NAV ═══════════
 nav_l, nav_r = st.columns([6, 1.2])
 with nav_l:
     st.markdown(f"""
     <div class="nav">
-        <div class="logo">
-            <div class="logo-dot">N</div>
-            <span>Nitro</span>
-            <span class="badge">v2</span>
-        </div>
+        <div class="logo"><div class="logo-dot">N</div><span>Nitro</span><span class="badge">v2</span></div>
     </div>
     """, unsafe_allow_html=True)
 with nav_r:
@@ -1126,7 +769,6 @@ with nav_r:
         st.session_state.theme = "dark" if THEME == "light" else "light"
         st.rerun()
 
-# STATE
 if "models" not in st.session_state:
     try: st.session_state.models = run(fetch_models())
     except Exception as e:
@@ -1139,6 +781,7 @@ PHASE_LABELS = {
     "init": "Inizializzazione",
     "account": "Preparazione sessione",
     "signup": "Configurazione servizio",
+    "upload": "Caricamento immagine di riferimento",
     "submit": "Invio richiesta",
     "render": "Generazione in corso",
 }
@@ -1150,15 +793,10 @@ def render_progress(percent, phase, elapsed, eta, extra=""):
     return f"""
     <div class="np-wrap">
         <div class="np-head">
-            <div class="np-label">
-                <div class="np-spin"></div>
-                <span>{label}</span>
-            </div>
+            <div class="np-label"><div class="np-spin"></div><span>{label}</span></div>
             <div class="np-pct">{percent:.2f}%</div>
         </div>
-        <div class="np-track">
-            <div class="np-fill" style="width: {percent:.4f}%;"></div>
-        </div>
+        <div class="np-track"><div class="np-fill" style="width: {percent:.4f}%;"></div></div>
         <div class="np-meta">
             <span>{elapsed:.2f}s trascorsi</span>
             <span class="np-phase">{phase}</span>
@@ -1168,7 +806,7 @@ def render_progress(percent, phase, elapsed, eta, extra=""):
     """
 
 def render_done(elapsed, count):
-    imgs_word = "immagine" if count == 1 else "immagini"
+    w = "immagine" if count == 1 else "immagini"
     return f"""
     <div class="np-wrap done">
         <div class="np-head">
@@ -1178,13 +816,11 @@ def render_done(elapsed, count):
             </div>
             <div class="np-pct">100.00%</div>
         </div>
-        <div class="np-track">
-            <div class="np-fill" style="width: 100%;"></div>
-        </div>
+        <div class="np-track"><div class="np-fill" style="width: 100%;"></div></div>
         <div class="np-meta">
             <span>{elapsed:.2f}s totali</span>
             <span class="np-phase">successo</span>
-            <span>{count} {imgs_word}</span>
+            <span>{count} {w}</span>
         </div>
     </div>
     """
@@ -1195,23 +831,18 @@ def placeholder():
         <div>La tua immagine apparirà qui</div>
     </div>'''
 
-# ═══════════ TABS ═══════════
 tab_gen, tab_bulk, tab_models = st.tabs(["Genera", "Multiplo", "Modelli"])
 
-# ═══════════ GENERA ═══════════
 with tab_gen:
     col_l, col_r = st.columns([1, 1.4], gap="large")
-    
     with col_l:
         st.markdown('<div class="sec-label">Descrizione</div>', unsafe_allow_html=True)
         prompt = st.text_area("p", height=130, label_visibility="collapsed",
                               placeholder="Descrivi l'immagine che vuoi creare...")
-        
         st.markdown('<div class="sec-label">Modello</div>', unsafe_allow_html=True)
         models = st.session_state.models or []
         m_sel = None
         if models:
-            # Ordina per tempo di generazione (più veloce prima)
             sorted_m = sorted(models, key=lambda x: (_mtime(x), _mk(x)))
             labels = [_mn(m) or _mk(m) for m in sorted_m]
             sel = st.selectbox("m", range(len(labels)),
@@ -1219,21 +850,20 @@ with tab_gen:
             m_sel = sorted_m[sel]
         else:
             st.warning("Nessun modello disponibile")
-        
         c1, c2 = st.columns(2)
         with c1:
             st.markdown('<div class="sec-label">Formato</div>', unsafe_allow_html=True)
             dims = _mdims(m_sel) if m_sel else ["1:1"]
             if not dims: dims = ["1:1"]
-            dim_sel = st.selectbox("d", dims, 
-                                    format_func=lambda x: DIM_LABEL.get(x, x),
+            dim_sel = st.selectbox("d", dims, format_func=lambda x: DIM_LABEL.get(x, x),
                                     label_visibility="collapsed")
         with c2:
             st.markdown('<div class="sec-label">Quantità</div>', unsafe_allow_html=True)
             max_c = _mocl(m_sel) if m_sel else 4
             count = st.number_input("c", 1, max_c or 4, 1, label_visibility="collapsed")
         
-        ref_urls = None
+        ref_bytes = None
+        ref_filename = None
         if m_sel and m_sel.get("referenceImage"):
             st.markdown('<div class="sec-label">Immagine di riferimento (opzionale)</div>', unsafe_allow_html=True)
             uploaded = st.file_uploader("u", type=["png", "jpg", "jpeg", "webp"],
@@ -1241,14 +871,9 @@ with tab_gen:
                                          label_visibility="collapsed",
                                          help="Trascina qui un'immagine o clicca per selezionarla")
             if uploaded is not None:
-                img_bytes = uploaded.read()
-                ext = uploaded.name.lower().split(".")[-1]
-                mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
-                        "webp": "image/webp"}.get(ext, "image/png")
-                b64 = base64.b64encode(img_bytes).decode("ascii")
-                ref_urls = [f"data:{mime};base64,{b64}"]
-                # Preview miniatura
-                st.image(uploaded, width=120)
+                ref_bytes = uploaded.read()
+                ref_filename = uploaded.name
+                st.image(uploaded, width=140)
         
         st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
         gen_btn = st.button("Genera immagine", use_container_width=True,
@@ -1281,10 +906,8 @@ with tab_gen:
         output_slot.markdown(placeholder(), unsafe_allow_html=True)
         metrics_slot.empty()
         
-        progress_state = {
-            "phase": "init", "status": "", "pid": "",
-            "est_time": _mtime(m_sel) + 15,
-        }
+        progress_state = {"phase": "init", "status": "", "pid": "",
+                          "est_time": _mtime(m_sel) + (25 if ref_bytes else 15)}
         result_holder = {"result": None, "error": None, "done": False}
         
         def gen_worker():
@@ -1292,32 +915,28 @@ with tab_gen:
                 res = run(do_generate(
                     prompt=prompt, model_key=_mk(m_sel),
                     dimension=dim_sel, count=int(count),
-                    reference_urls=ref_urls, progress_state=progress_state))
+                    reference_bytes=ref_bytes, reference_filename=ref_filename,
+                    progress_state=progress_state))
                 result_holder["result"] = res
             except Exception as e:
                 result_holder["error"] = e
             finally:
                 result_holder["done"] = True
         
-        t = threading.Thread(target=gen_worker, daemon=True)
-        t.start()
-        
+        t = threading.Thread(target=gen_worker, daemon=True); t.start()
         start = time.perf_counter()
         est = progress_state["est_time"]
         
         while not result_holder["done"]:
             elapsed = time.perf_counter() - start
-            raw = elapsed / max(est, 1)
+            est_current = progress_state.get("est_time", est)
+            raw = elapsed / max(est_current, 1)
             progress = (1 - pow(2.718281828, -raw * 1.8)) * 99.5
             progress = min(progress, 98.5)
             phase = progress_state.get("phase", "init")
-            status = progress_state.get("status", "")
-            pid = progress_state.get("pid", "")
-            eta = max(0, est - elapsed)
-            extra = ""  # niente PID/status tecnici visibili
-            progress_slot.markdown(
-                render_progress(progress, phase, elapsed, eta, extra),
-                unsafe_allow_html=True)
+            eta = max(0, est_current - elapsed)
+            progress_slot.markdown(render_progress(progress, phase, elapsed, eta, ""),
+                                    unsafe_allow_html=True)
             time.sleep(0.05)
             if elapsed > 400: break
         
@@ -1331,14 +950,12 @@ with tab_gen:
         else:
             result = result_holder["result"]
             progress_slot.markdown(render_done(elapsed_final, len(result.urls)), unsafe_allow_html=True)
-            
             images = []
             for url in result.urls:
                 data = run(download_image(url))
                 if data:
                     try: images.append(Image.open(io.BytesIO(data)))
                     except: pass
-            
             st.session_state.images = images
             st.session_state.last_result = result
             
@@ -1356,24 +973,19 @@ with tab_gen:
                             st.image(img, use_container_width=True)
                             buf = io.BytesIO()
                             img.save(buf, format="PNG")
-                            st.download_button(
-                                f"Scarica #{i+1}",
-                                buf.getvalue(),
+                            st.download_button(f"Scarica #{i+1}", buf.getvalue(),
                                 file_name=f"nitro_{int(time.time())}_{i}.png",
-                                mime="image/png",
-                                key=f"dl_{i}_{time.time()}",
+                                mime="image/png", key=f"dl_{i}_{time.time()}",
                                 use_container_width=True)
                 else:
                     st.warning("Nessuna immagine ricevuta")
 
 
-# ═══════════ MULTIPLO ═══════════
 with tab_bulk:
     st.markdown('<div class="sec-label">Descrizioni (una per riga)</div>', unsafe_allow_html=True)
     bulk_prompts = st.text_area("b", height=200,
         placeholder="un drago rosso\nuna fenice blu\nun samurai cibernetico...",
         label_visibility="collapsed")
-    
     bc1, bc2, bc3 = st.columns(3)
     with bc1:
         st.markdown('<div class="sec-label">Modello</div>', unsafe_allow_html=True)
@@ -1390,13 +1002,11 @@ with tab_bulk:
         st.markdown('<div class="sec-label">Formato</div>', unsafe_allow_html=True)
         bd_dims = _mdims(bulk_m) if bulk_m else ["1:1"]
         if not bd_dims: bd_dims = ["1:1"]
-        bulk_dim = st.selectbox("bd", bd_dims,
-                                 format_func=lambda x: DIM_LABEL.get(x, x),
+        bulk_dim = st.selectbox("bd", bd_dims, format_func=lambda x: DIM_LABEL.get(x, x),
                                  key="bd", label_visibility="collapsed")
     with bc3:
         st.markdown('<div class="sec-label">Contemporanee</div>', unsafe_allow_html=True)
         bulk_conc = st.number_input("bc", 1, 8, 3, key="bc", label_visibility="collapsed")
-    
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
     bulk_go = st.button("Genera tutte", use_container_width=True, disabled=not bulk_m, key="bulk_go")
     
@@ -1428,7 +1038,6 @@ with tab_bulk:
                 finally: holder["done"] = True
             
             t = threading.Thread(target=worker, daemon=True); t.start()
-            
             start = time.perf_counter()
             per_prompt = _mtime(bulk_m) + 5
             est_total = (len(prompts) / int(bulk_conc)) * per_prompt
@@ -1448,7 +1057,6 @@ with tab_bulk:
             t.join(timeout=1)
             elapsed_final = time.perf_counter() - start
             ok = sum(1 for r in state["results"] if isinstance(r, Result))
-            
             progress_slot_bulk.markdown(render_done(elapsed_final, ok), unsafe_allow_html=True)
             
             with results_area:
@@ -1464,7 +1072,6 @@ with tab_bulk:
                         st.error(f"{i+1}. {prompts[i][:60]} — {err[:80]}")
 
 
-# ═══════════ MODELLI ═══════════
 with tab_models:
     top_c1, top_c2, top_c3 = st.columns([2, 1, 1])
     with top_c1:
@@ -1495,7 +1102,6 @@ with tab_models:
         max_out = _mocl(m)
         if max_out and max_out > 1: tags += f'<span class="tag">×{max_out}</span>'
         et = _mtime(m)
-        
         st.markdown(f"""
         <div class="mcard">
             <div>
